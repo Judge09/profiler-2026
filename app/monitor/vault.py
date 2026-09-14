@@ -22,6 +22,7 @@ Never put a personal account in here. Use a throwaway.
 """
 
 import base64
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -30,9 +31,15 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# Where the salt lives. The key itself is never written to disk.
-_SALT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "instance", "vault.salt")
+# Where the salt lives. The key itself is never written to disk. Vercel's
+# deployment directory is read-only, so use its writable temporary directory.
+_LOCAL_SALT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "instance", "vault.salt")
+_SALT_PATH = os.environ.get("MONITOR_VAULT_SALT_PATH") or (
+    "/tmp/profiler-instance/vault.salt"
+    if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    else _LOCAL_SALT_PATH)
 
 _KDF_ROUNDS = 480_000
 
@@ -46,12 +53,21 @@ class VaultLocked(Exception):
 
 def _salt():
     """Read (or create) the KDF salt."""
-    os.makedirs(os.path.dirname(_SALT_PATH), exist_ok=True)
-    if not os.path.exists(_SALT_PATH):
-        with open(_SALT_PATH, "wb") as f:
-            f.write(os.urandom(16))
-    with open(_SALT_PATH, "rb") as f:
-        return f.read()
+    try:
+        os.makedirs(os.path.dirname(_SALT_PATH), exist_ok=True)
+        if not os.path.exists(_SALT_PATH):
+            with open(_SALT_PATH, "wb") as f:
+                f.write(os.urandom(16))
+        with open(_SALT_PATH, "rb") as f:
+            return f.read()
+    except OSError:
+        # A read-only serverless filesystem must still allow the app to start.
+        # With the environment key, this gives every instance the same salt.
+        secret = os.environ.get("MONITOR_VAULT_KEY")
+        if secret:
+            return hashlib.sha256(
+                ("profiler-vault-salt:" + secret).encode("utf-8")).digest()[:16]
+        return b"profiler-vault-salt-v1"
 
 
 def derive_key(passphrase):
