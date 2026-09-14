@@ -112,8 +112,8 @@ def _warn_on_weak_config(cfg):
     if cfg.PASSWORD == "profiler2024":
         problems.append("PROFILER_PASSWORD is still the built-in default.")
     if not os.environ.get("SECRET_KEY"):
-        problems.append("SECRET_KEY is generated per process, so sessions drop "
-                        "on restart and across workers.")
+        problems.append("SECRET_KEY is derived from PROFILER_PASSWORD; set a "
+                        "separate SECRET_KEY for stronger isolation.")
     if not problems:
         return
 

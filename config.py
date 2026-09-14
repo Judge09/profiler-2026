@@ -7,6 +7,7 @@ without editing the file.
 
 import os
 import secrets
+import hashlib
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -55,10 +56,11 @@ SERVERLESS = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTIO
 # Change this password before use, or set PROFILER_PASSWORD in the environment.
 PASSWORD = os.environ.get("PROFILER_PASSWORD", "profiler2024")
 
-# Secret key for session signing. A generated key is fine for a single local
-# process, but it changes on every restart, which logs everyone out -- so set
-# SECRET_KEY explicitly anywhere with more than one worker.
-SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+# Keep sessions stable across Vercel restarts even when SECRET_KEY is omitted.
+# An explicitly configured key remains preferred; the password-derived fallback
+# means the deployment only needs one required secret.
+SECRET_KEY = os.environ.get("SECRET_KEY") or hashlib.sha256(
+    ("profiler-session:" + PASSWORD).encode("utf-8")).hexdigest()
 
 # -- Database ----------------------------------------------------------------
 #
