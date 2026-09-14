@@ -21,6 +21,8 @@ editor, so an analyst can retune scoring without touching this file.
 import re
 from urllib.parse import urlparse
 
+from .keywords import GENERIC_TERMS, is_generic_term, spec_for
+
 BASE_SCORE = 25
 THRESHOLD_REVIEW = 30
 THRESHOLD_HIGH = 60
@@ -231,32 +233,6 @@ def clamp(v, lo=0, hi=100):
 # Platforms whose "author" is a publication, not an account someone controls.
 NEWS_PLATFORMS = {"news site", "web page", "rss", "hackernews", "news"}
 
-# Words that describe a category rather than a subject. On their own they place
-# a post in no particular topic -- "election" matches Manila and Missouri alike
-# -- so they broaden a watch but can never anchor it.
-GENERIC_TERMS = {
-    "election", "elections", "poll", "polls", "vote", "votes", "voting",
-    "voter", "voters", "ballot", "ballots", "campaign", "candidate",
-    "candidates", "politics", "political", "government", "news", "update",
-    "updates", "report", "security", "cyber", "cybersecurity", "scam",
-    "fraud", "protest", "rally", "parliament", "parliamentary", "senate",
-    "congress", "official", "announcement", "statement",
-}
-
-
-def is_generic_term(term):
-    """True when a term names a category rather than a subject.
-
-    Multi-word phrases count as generic when every word is generic, so
-    "parliamentary elections" cannot anchor a watch (it matches Russia and
-    1919 Italy alike) while "BARMM elections" still can.
-    """
-    words = [w for w in re.split(r"[^a-z0-9]+", str(term or "").lower()) if w]
-    if not words:
-        return True
-    return all(w in GENERIC_TERMS for w in words)
-
-
 def handle_looks_social(handle):
     """True when a handle names an account rather than a website host."""
     h = str(handle or "").strip().lstrip("@")
@@ -445,24 +421,9 @@ def build_config(watch, profiles=None):
         if d:
             domains.append(d)
 
-    # Keywords split into required (marked with a leading +) and optional.
-    # Requiring at least one anchor term keeps a watch on its topic instead of
-    # matching anything that mentions any single keyword.
-    raw_keywords = [k.strip() for k in (get("keywords") or "").split(",") if k.strip()]
-    required_kw = [k.lstrip("+").strip().lower() for k in raw_keywords if k.startswith("+")]
-    optional_kw = [k.lower() for k in raw_keywords if not k.startswith("+")]
-    keywords = [k.lstrip("+").strip().lower() for k in raw_keywords]
-
-    # Terms too generic to establish a topic on their own. Matching only these
-    # is what pulled foreign coverage into a local-election watch.
-    generic_kw = {k for k in optional_kw if is_generic_term(k)}
-    if not required_kw:
-        # No explicit anchor: everything specific becomes an anchor, and a post
-        # must hit at least one of them. Generic terms only ever broaden.
-        subj = (subject or "").strip().lower()
-        specific = [k for k in optional_kw if k not in generic_kw]
-        required_kw = ([subj] if subj else []) + [k for k in specific if k != subj]
-        optional_kw = sorted(generic_kw)
+    # Keyword rules now live in `keywords.py`, which owns required/optional/
+    # excluded matching, phrases, OR groups and regexes.
+    spec = spec_for(watch)
 
     reference = get("reference_text") or ""
 
@@ -486,9 +447,11 @@ def build_config(watch, profiles=None):
         "accounts": accounts,
         "handles": handles,
         "domains": domains,
-        "keywords": keywords,
-        "required_keywords": required_kw,
-        "optional_keywords": optional_kw,
+        "spec": spec,
+        "keywords": [t.raw for t in spec.required] + [t.raw for t in spec.optional],
+        "required_keywords": [t.raw for t in spec.required],
+        "optional_keywords": [t.raw for t in spec.optional],
+        "excluded_keywords": [t.raw for t in spec.excluded],
         "mode_release": bool(get("mode_release")),
         "mode_hunter": bool(get("mode_hunter")),
         "custom_flags": compile_custom_flags(get("custom_flags")),
@@ -550,33 +513,19 @@ def analyze(post, cfg):
     official = (platform.lower() + ":" + handle.lower() in cfg["accounts"]
                 or (bool(handle) and ":" + handle.lower() in cfg["accounts"]))
 
-    # Relevance: a post must be on the watch's topic, not merely mention one of
-    # its keywords. An anchor term (or the subject) has to appear; the optional
-    # keywords then broaden coverage *within* that topic.
-    def _mentions(term):
-        return bool(re.search(r"\b" + re.escape(term) + r"\b", text, re.I))
-
-    kw_hits = [k for k in cfg["keywords"] if _mentions(k)]
-    required = cfg.get("required_keywords") or []
-    optional_hits = [k for k in (cfg.get("optional_keywords") or []) if _mentions(k)]
-
+    # Relevance. Delegated to the keyword spec, which enforces required /
+    # optional / excluded terms. A post from an official account is about the
+    # subject by definition, so it is never dropped for being off-topic.
+    spec = cfg["spec"]
     subject_n = cfg["subject_norm"]
     subject_hit = bool(subject_n and subject_n in norm_name(text))
-    anchor_hit = subject_hit or any(_mentions(k) for k in required)
 
-    if required:
-        # On topic when any anchor appears, or the post came from an official
-        # account (which is about the subject by definition). Generic keywords
-        # alone are not enough -- "election" is not a topic.
-        relevant = bool(official or anchor_hit)
-    else:
-        relevant = bool(official or kw_hits or subject_hit)
-
-    off_topic_reason = ""
-    if not relevant and optional_hits:
-        off_topic_reason = ("Mentions %s, but none of %s"
-                            % (", ".join(optional_hits[:3]),
-                               ", ".join(required[:4]) or "the subject"))
+    # The author and handle carry topic too: a post *by* the subject belongs in
+    # the watch even when the body never names it.
+    kw_eval = spec.evaluate(text + " " + author + " " + handle, subject_hit)
+    relevant = bool(official or kw_eval["relevant"])
+    kw_hits = kw_eval["required_hits"] + kw_eval["optional_hits"]
+    off_topic_reason = "" if relevant else kw_eval["reason"]
 
     # Identity: impersonation (release mode)
     if cfg["mode_release"]:
@@ -805,6 +754,8 @@ def analyze(post, cfg):
         "official": official,
         "coverage": round(coverage, 3),
         "keyword_hits": kw_hits,
+        "keyword_eval": kw_eval,
+        "relevance": kw_eval["relevance"],
         "off_topic_reason": off_topic_reason,
         "profile_matches": matches,
         "custom_hits": [r["label"] for r in custom_hits],

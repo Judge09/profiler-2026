@@ -2,11 +2,9 @@ import json
 import uuid
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import (Blueprint, render_template, request, Response,
-                   stream_with_context, jsonify, current_app)
+from flask import (Blueprint, Response, jsonify, render_template, request,
+                   stream_with_context)
 import requests as req_lib
-from ..extensions import db
-from ..models import OsintResult, Profile
 from ..auth.routes import login_required
 
 osint = Blueprint("osint", __name__, url_prefix="/osint")
@@ -73,64 +71,53 @@ def _check_platform(username, name, data):
 @osint.route("/")
 @login_required
 def index():
-    profiles = Profile.query.order_by(Profile.codename).all()
-    return render_template("username_osint/index.html", profiles=profiles,
+    """Username search. Results are streamed and stored by the browser."""
+    return render_template("username_osint/index.html",
                            platform_count=len(PLATFORMS))
 
 
 @osint.route("/check")
 @login_required
 def check():
+    """Stream a username check across every configured platform.
+
+    Nothing is written here: results go to the client as they arrive and the
+    browser stores them. That also removes the per-platform database write that
+    used to happen inside the stream, which was the slowest part of a run.
+    """
     username = request.args.get("username", "").strip()
     if not username:
         return jsonify({"error": "Username required"}), 400
+    if len(username) > 100:
+        return jsonify({"error": "That username is too long."}), 400
 
     run_id = str(uuid.uuid4())
 
     def generate():
-        # Send run_id first so client can save it
-        yield f"data: {json.dumps({'type': 'start', 'run_id': run_id, 'total': len(PLATFORMS)})}\n\n"
+        yield "data: %s\n\n" % json.dumps(
+            {"type": "start", "run_id": run_id, "total": len(PLATFORMS)})
 
-        with current_app.app_context():
-            with ThreadPoolExecutor(max_workers=20) as pool:
-                futures = {
-                    pool.submit(_check_platform, username, name, data): name
-                    for name, data in PLATFORMS.items()
-                }
-                done = 0
-                for future in as_completed(futures):
-                    done += 1
-                    try:
-                        result = future.result()
-                    except Exception:
-                        result = {
-                            "platform": futures[future],
-                            "url": "",
-                            "status": "error",
-                            "http_code": None,
-                            "username": username,
-                        }
+        found = 0
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            futures = {pool.submit(_check_platform, username, name, data): name
+                       for name, data in PLATFORMS.items()}
+            done = 0
+            for future in as_completed(futures):
+                done += 1
+                try:
+                    result = future.result()
+                except Exception:
+                    result = {"platform": futures[future], "url": "",
+                              "status": "error", "http_code": None,
+                              "username": username}
+                if result["status"] == "found":
+                    found += 1
+                result["done"] = done
+                yield "data: %s\n\n" % json.dumps(result)
 
-                    # Persist to DB
-                    try:
-                        r = OsintResult(
-                            run_id=run_id,
-                            username=username,
-                            platform=result["platform"],
-                            url=result.get("url", ""),
-                            status=result["status"],
-                            http_code=result.get("http_code"),
-                        )
-                        db.session.add(r)
-                        db.session.commit()
-                        result["id"] = r.id
-                    except Exception:
-                        db.session.rollback()
-
-                    result["done"] = done
-                    yield f"data: {json.dumps(result)}\n\n"
-
-        yield f"data: {json.dumps({'type': 'done', 'run_id': run_id})}\n\n"
+        yield "data: %s\n\n" % json.dumps(
+            {"type": "done", "run_id": run_id, "found": found,
+             "total": len(PLATFORMS)})
 
     return Response(
         stream_with_context(generate()),
@@ -141,52 +128,3 @@ def check():
             "Connection": "keep-alive",
         },
     )
-
-
-@osint.route("/save", methods=["POST"])
-@login_required
-def save_to_profile():
-    data = request.json
-    run_id = data.get("run_id")
-    profile_id = data.get("profile_id")
-
-    if not run_id or not profile_id:
-        return jsonify({"error": "run_id and profile_id required"}), 400
-
-    Profile.query.get_or_404(int(profile_id))
-
-    updated = OsintResult.query.filter_by(run_id=run_id).update(
-        {"profile_id": int(profile_id)}
-    )
-    db.session.commit()
-    return jsonify({"ok": True, "updated": updated})
-
-
-@osint.route("/history")
-@login_required
-def history():
-    # Group by run_id, return latest 20 runs
-    from sqlalchemy import func
-    runs = (
-        db.session.query(
-            OsintResult.run_id,
-            OsintResult.username,
-            func.count(OsintResult.id).label("total"),
-            func.sum(db.case((OsintResult.status == "found", 1), else_=0)).label("found"),
-            func.max(OsintResult.checked_at).label("checked_at"),
-        )
-        .group_by(OsintResult.run_id, OsintResult.username)
-        .order_by(func.max(OsintResult.checked_at).desc())
-        .limit(20)
-        .all()
-    )
-    return jsonify([
-        {
-            "run_id": r.run_id,
-            "username": r.username,
-            "total": r.total,
-            "found": r.found,
-            "checked_at": r.checked_at.strftime("%Y-%m-%d %H:%M") if r.checked_at else "",
-        }
-        for r in runs
-    ])

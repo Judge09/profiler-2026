@@ -15,23 +15,56 @@ returning empty results that look like "no posts found".
 """
 
 import re
-from datetime import datetime
+from urllib.parse import urlparse
 
 import requests
 
 from . import collectors
 from .collectors import _clean, _host, _result
 
-# Text that means "we noticed you are a bot" rather than "no results".
-_CHALLENGE_MARKERS = [
+# Signals that we were challenged rather than simply finding nothing.
+#
+# These are split by where they may appear, because the two places carry very
+# different weight. A word in the *URL* is the platform telling us where it sent
+# us. The same word in the *body* is usually just an article that happens to use
+# it -- a news story containing "suspended" or "challenge" is not a lockout, and
+# treating it as one throws away real results while sending the analyst to chase
+# an account problem that does not exist.
+#
+# So: URL markers match on path segments, and body markers must be whole
+# challenge-page phrases, not bare words.
+
+_URL_MARKERS = [
     ("checkpoint", "The account hit a Meta checkpoint and needs manual review."),
     ("login_attempt", "The session was rejected and a fresh login was demanded."),
-    ("/login", "Redirected to a login page -- the session cookies are dead."),
-    ("captcha", "A CAPTCHA was served."),
-    ("suspended", "The account appears suspended."),
+    ("captcha", "A CAPTCHA page was served."),
     ("challenge", "The platform issued a challenge page."),
-    ("temporarily blocked", "The account is temporarily blocked."),
-    ("confirm your identity", "Identity confirmation was requested."),
+    ("denied", "The platform denied the request."),
+]
+
+# Paths that mean "you are not logged in", as whole segments so that a search
+# for the word "login" does not trip them.
+_LOGIN_PATHS = ("/login", "/log-in", "/signin", "/sign-in", "/accounts/login",
+                "/auth/login", "/session/new", "/checkpoint")
+
+_BODY_MARKERS = [
+    (re.compile(r"\b(your account has been|we(?:'ve| have) )?(temporarily )?"
+                r"(suspended|disabled|locked|restricted) your account\b", re.I),
+     "The platform says the account is suspended or locked."),
+    (re.compile(r"\bconfirm your identity\b", re.I),
+     "Identity confirmation was requested."),
+    (re.compile(r"\b(complete|solve) (the |this )?(security )?(check|captcha)\b", re.I),
+     "A CAPTCHA or security check was served."),
+    (re.compile(r"\byou(?:'re| are) temporarily blocked\b", re.I),
+     "The account is temporarily blocked."),
+    (re.compile(r"\b(log ?in|sign ?in) to continue\b", re.I),
+     "The page demands a fresh login -- the session cookies are dead."),
+    (re.compile(r"\bsuspicious (login |activity)\b", re.I),
+     "The platform flagged the session as suspicious."),
+    (re.compile(r"\bunusual (traffic|activity) from your computer\b", re.I),
+     "The platform flagged the request as automated traffic."),
+    (re.compile(r"\benable javascript (and cookies )?to continue\b", re.I),
+     "A bot-check interstitial was served; this feed needs the browser strategy."),
 ]
 
 # Lightweight endpoints that render without JavaScript, per platform.
@@ -46,25 +79,79 @@ _ENDPOINTS = {
 
 
 def _detect_challenge(url, body):
-    low = (body or "")[:6000].lower()
+    """Say why the platform refused us, or None when the page looks real.
+
+    Ordered by confidence: where the platform *sent* us is stronger evidence
+    than what the page happens to say, and both are checked more narrowly than
+    a substring match so ordinary articles are not mistaken for lockouts.
+    """
     target = (url or "").lower()
-    for marker, message in _CHALLENGE_MARKERS:
-        if marker in target or marker in low:
+    try:
+        path = urlparse(target).path or ""
+    except ValueError:
+        path = target
+
+    # A redirect to a login/checkpoint path is unambiguous.
+    for p in _LOGIN_PATHS:
+        if path == p or path.startswith(p + "/") or path.startswith(p + "?"):
+            return ("Redirected to %s -- the session cookies are dead or the "
+                    "platform wants a fresh login." % p)
+
+    for marker, message in _URL_MARKERS:
+        # Match on a path segment or query key, not anywhere in the string, so
+        # a search for "captcha" in the query does not trip this.
+        if re.search(r"(?:^|[/?&=._-])" + re.escape(marker) + r"(?:[/?&=._-]|$)",
+                     path):
+            return message
+
+    # Body phrases are matched whole. Only the head of the document is examined:
+    # a challenge page says so immediately, while a long article might mention
+    # any of these words halfway down.
+    head = (body or "")[:8000]
+    for rx, message in _BODY_MARKERS:
+        if rx.search(head):
             return message
     return None
 
 
-def _session_for(cookies):
+def _session_for(cookies, target_url=None):
+    """Build a session with the stored cookies attached.
+
+    Two details matter here, and getting either wrong makes every authenticated
+    fetch fail with a misleading "the session is dead" message:
+
+    * `requests` rejects `domain=None` outright, so a cookie pasted as a plain
+      `Cookie:` header -- which carries no domain, and is the most common way
+      people copy one -- must be given a domain explicitly. We use the target
+      host, which is what the browser would have sent it to anyway.
+    * A domainless cookie must still be scoped to *something*; sending it to
+      every host would leak the session to unrelated sites.
+    """
     s = requests.Session()
     s.headers.update(collectors.HEADERS)
+
+    fallback = ""
+    if target_url:
+        host = _host(target_url)
+        # A leading dot makes the cookie valid for subdomains too, matching how
+        # platforms actually set their session cookies.
+        fallback = ("." + host) if host and not host.startswith(".") else host
+
     for c in cookies or []:
-        if not c.get("name"):
+        name = (c.get("name") or "").strip()
+        if not name:
             continue
+        domain = (c.get("domain") or "").strip() or fallback
         try:
-            s.cookies.set(c["name"], str(c.get("value", "")),
-                          domain=c.get("domain") or None,
-                          path=c.get("path") or "/")
-        except Exception:
+            if domain:
+                s.cookies.set(name, str(c.get("value", "")),
+                              domain=domain, path=c.get("path") or "/")
+            else:
+                # No domain anywhere: let the jar default it at request time
+                # rather than dropping the cookie.
+                s.cookies.set(name, str(c.get("value", "")))
+        except (AttributeError, TypeError, ValueError):
+            # A malformed entry should cost that one cookie, not the session.
             continue
     return s
 
@@ -133,7 +220,7 @@ def fetch_with_cookies(platform, query, cookies, limit=25, url=None):
         return _result(False, note="No known endpoint for %s. Supply a URL." % platform)
     target = target.replace("{q}", requests.utils.quote(query or ""))
 
-    session = _session_for(cookies)
+    session = _session_for(cookies, target)
     try:
         resp = session.get(target, timeout=20, allow_redirects=True)
     except requests.exceptions.Timeout:
@@ -203,15 +290,26 @@ def fetch_with_browser(platform, query, cookies, limit=25, url=None):
                                       locale="en-US")
             valid = []
             for c in cookies or []:
-                if not c.get("name"):
+                name = (c.get("name") or "").strip()
+                if not name:
                     continue
                 valid.append({
-                    "name": c["name"], "value": str(c.get("value", "")),
-                    "domain": c.get("domain") or "." + _host(target),
+                    "name": name, "value": str(c.get("value", "")),
+                    "domain": (c.get("domain") or "").strip() or "." + _host(target),
                     "path": c.get("path") or "/",
                 })
             if valid:
-                ctx.add_cookies(valid)
+                # Playwright rejects the whole batch if any single cookie is
+                # malformed, so fall back to adding them one at a time rather
+                # than losing an otherwise good session to one bad entry.
+                try:
+                    ctx.add_cookies(valid)
+                except Exception:
+                    for one in valid:
+                        try:
+                            ctx.add_cookies([one])
+                        except Exception:
+                            continue
             page = ctx.new_page()
             page.goto(target, timeout=35000, wait_until="domcontentloaded")
             page.wait_for_timeout(3500)  # let the feed hydrate

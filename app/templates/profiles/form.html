@@ -1,261 +1,301 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edit' if profile else 'New' }} Profile — PROFILER{% endblock %}
+{% block title %}{{ 'Edit' if mode == 'edit' else 'New' }} Profile — PROFILER{% endblock %}
 
 {% block content %}
 <div class="page-header d-flex align-items-center justify-content-between">
   <div>
-    <div class="page-title">
-      {% if profile %}<span>Edit</span> Profile{% else %}<span>New</span> Profile{% endif %}
+    <div class="page-title" id="formTitle">
+      {{ 'Edit' if mode == 'edit' else 'New' }} <span>Profile</span>
     </div>
-    <div class="page-subtitle">{{ profile.codename if profile else 'Create a new intelligence dossier' }}</div>
+    <div class="page-subtitle">Stored in this browser only</div>
   </div>
-  {% if profile %}
-  <a href="{{ url_for('profiles.detail', profile_id=profile.id) }}" class="btn btn-ghost">
-    <i class="fa fa-arrow-left"></i> Back
-  </a>
-  {% else %}
   <a href="{{ url_for('profiles.list_profiles') }}" class="btn btn-ghost">
     <i class="fa fa-arrow-left"></i> Back
   </a>
-  {% endif %}
 </div>
 
 <div class="page-body">
-  {% if error %}
-  <div class="alert alert-danger">{{ error }}</div>
-  {% endif %}
-
-  <form method="POST" enctype="multipart/form-data" id="profileForm">
-
-    <div class="row g-4">
-      <!-- Left column -->
-      <div class="col-lg-4">
-
-        <!-- Photo Upload -->
-        <div class="card mb-4">
-          <div class="card-header-bar">
-            <div class="card-title">Profile Photo</div>
+  <div class="row g-4">
+    <div class="col-lg-8">
+      <div class="card p-4">
+        <div class="card-title mb-3"><i class="fa fa-id-card me-2"></i>Identity</div>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Codename <span style="color:var(--red)">*</span></label>
+            <input class="form-control" id="f-codename" placeholder="e.g. NIGHTJAR">
           </div>
-          <div class="text-center">
-            <div id="photoPreviewWrap" class="mb-3">
-              {% if profile and profile.photo_path %}
-              <img id="photoPreview" src="{{ url_for('static', filename=profile.photo_path) }}"
-                   style="width:140px; height:140px; border-radius:50%; object-fit:cover; border:3px solid var(--accent); box-shadow:0 0 20px rgba(0,229,255,0.2);">
-              {% else %}
-              <div id="photoPreview" style="width:140px; height:140px; border-radius:50%; background:var(--bg-card2); border:3px solid var(--border); display:flex; align-items:center; justify-content:center; color:var(--text-faint); font-size:48px; margin:0 auto;">
-                <i class="fa fa-user"></i>
-              </div>
-              {% endif %}
+          <div class="col-md-6">
+            <label class="form-label">Real name</label>
+            <input class="form-control" id="f-real_name">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Date of birth</label>
+            <input class="form-control" id="f-dob" placeholder="YYYY-MM-DD">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Nationality</label>
+            <input class="form-control" id="f-nationality">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Occupation</label>
+            <input class="form-control" id="f-occupation">
+          </div>
+          <div class="col-12">
+            <label class="form-label">Known aliases</label>
+            <input class="form-control" id="f-aliases" placeholder="Comma separated">
+            <div class="form-text">
+              Digital Hunter matches posts against these as well as the codename.
             </div>
-            <label class="btn btn-ghost btn-sm" for="photoInput">
-              <i class="fa fa-upload"></i> Upload Photo
-            </label>
-            <input type="file" id="photoInput" name="photo" accept="image/*"
-                   style="display:none;" onchange="previewPhoto(this)">
-            <div style="font-size:10px; color:var(--text-faint); margin-top:6px;">JPEG/PNG, max 16MB</div>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Physical description</label>
+            <textarea class="form-control" id="f-physical_desc" rows="2"></textarea>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Background notes</label>
+            <textarea class="form-control" id="f-bio_notes" rows="4"></textarea>
           </div>
         </div>
-
-        <!-- Tags -->
-        <div class="card">
-          <div class="card-header-bar">
-            <div class="card-title">Tags</div>
-          </div>
-          <div class="d-flex flex-wrap gap-2">
-            {% for tag in all_tags %}
-            <label style="cursor:pointer;">
-              <input type="checkbox" name="tag_ids" value="{{ tag.id }}"
-                     style="display:none;"
-                     {% if profile and tag in profile.tags %}checked{% endif %}
-                     onchange="toggleTagPill(this)">
-              <span class="badge-tag tag-pill-{{ tag.id }}"
-                    style="background:{{ tag.color }}{% if profile and tag in profile.tags %}44{% else %}11{% endif %};
-                           color:{{ tag.color }};
-                           border:1px solid {{ tag.color }}{% if profile and tag in profile.tags %}{% else %}44{% endif %};
-                           cursor:pointer; transition:all 0.15s;">
-                {{ tag.name }}
-              </span>
-            </label>
-            {% endfor %}
-            {% if not all_tags %}
-            <span style="font-size:12px; color:var(--text-faint);">
-              No tags yet — create them from the Profiles list.
-            </span>
-            {% endif %}
-          </div>
-        </div>
-
       </div>
 
-      <!-- Right column -->
-      <div class="col-lg-8">
-
-        <!-- Identity -->
-        <div class="card mb-4">
-          <div class="card-header-bar">
-            <div class="card-title"><i class="fa fa-fingerprint me-2"></i>Identity</div>
-          </div>
-
-          <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label">Codename / Alias <span style="color:var(--red)">*</span></label>
-              <input type="text" name="codename" class="form-control"
-                     value="{{ profile.codename if profile else '' }}"
-                     placeholder="e.g. SHADOW-7" required style="font-family:var(--font-mono);">
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Real Name</label>
-              <input type="text" name="real_name" class="form-control"
-                     value="{{ profile.real_name if profile else '' }}" placeholder="Full name">
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Date of Birth</label>
-              <input type="date" name="dob" class="form-control"
-                     value="{{ profile.dob if profile else '' }}">
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Nationality</label>
-              <input type="text" name="nationality" class="form-control"
-                     value="{{ profile.nationality if profile else '' }}" placeholder="e.g. Filipino">
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Occupation</label>
-              <input type="text" name="occupation" class="form-control"
-                     value="{{ profile.occupation if profile else '' }}" placeholder="e.g. Engineer">
-            </div>
-            <div class="col-12">
-              <label class="form-label">Known Aliases</label>
-              <input type="text" name="known_aliases" class="form-control"
-                     value="{{ profile.known_aliases | join(', ') if profile else '' }}"
-                     placeholder="Comma-separated aliases: Ghost, ANON_X, xhacker99">
-            </div>
-            <div class="col-12">
-              <label class="form-label">Physical Description</label>
-              <textarea name="physical_desc" class="form-control" rows="2"
-                        placeholder="Height, build, hair, distinguishing features…">{{ profile.physical_desc if profile else '' }}</textarea>
-            </div>
-          </div>
+      <div class="card p-4 mt-3">
+        <div class="card-title mb-3"><i class="fa fa-share-nodes me-2"></i>Social accounts</div>
+        <div id="socialRows"></div>
+        <button class="btn btn-outline btn-sm mt-2" id="addSocial">
+          <i class="fa fa-plus"></i> Add account
+        </button>
+        <div class="form-text mt-2">
+          Handles here are matched against post authors in Digital Hunter mode.
         </div>
-
-        <!-- Social Links -->
-        <div class="card mb-4">
-          <div class="card-header-bar">
-            <div class="card-title"><i class="fa fa-share-nodes me-2"></i>Social Links</div>
-            <button type="button" class="btn btn-ghost btn-sm" onclick="addSocialRow()">
-              <i class="fa fa-plus"></i> Add
-            </button>
-          </div>
-          <div id="socialLinksContainer">
-            {% if profile and profile.social_links %}
-              {% for link in profile.social_links %}
-              <div class="social-edit-row d-flex gap-2 mb-2 align-items-center">
-                <select name="social_platform" class="form-select" style="width:140px; flex-shrink:0;">
-                  {% for plat in platforms %}
-                  <option value="{{ plat }}" {% if link.platform == plat %}selected{% endif %}>{{ plat }}</option>
-                  {% endfor %}
-                </select>
-                <input type="text" name="social_username" class="form-control" style="width:130px;"
-                       value="{{ link.username }}" placeholder="@username">
-                <input type="url" name="social_url" class="form-control"
-                       value="{{ link.url }}" placeholder="https://...">
-                <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.social-edit-row').remove()">
-                  <i class="fa fa-trash"></i>
-                </button>
-              </div>
-              {% endfor %}
-            {% else %}
-              <!-- Default one empty row -->
-              <div class="social-edit-row d-flex gap-2 mb-2 align-items-center">
-                <select name="social_platform" class="form-select" style="width:140px; flex-shrink:0;">
-                  {% for plat in platforms %}<option value="{{ plat }}">{{ plat }}</option>{% endfor %}
-                </select>
-                <input type="text" name="social_username" class="form-control" style="width:130px;" placeholder="@username">
-                <input type="url" name="social_url" class="form-control" placeholder="https://...">
-                <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.social-edit-row').remove()">
-                  <i class="fa fa-trash"></i>
-                </button>
-              </div>
-            {% endif %}
-          </div>
-        </div>
-
-        <!-- Notes -->
-        <div class="card mb-4">
-          <div class="card-header-bar">
-            <div class="card-title"><i class="fa fa-note-sticky me-2"></i>Bio / Notes</div>
-          </div>
-          <textarea name="bio_notes" class="form-control" rows="4"
-                    placeholder="Background intel, notes (Markdown supported)…">{{ profile.bio_notes if profile else '' }}</textarea>
-        </div>
-
-        <div class="d-flex gap-3">
-          <button type="submit" class="btn btn-primary">
-            <i class="fa fa-save"></i>
-            {{ 'Update Profile' if profile else 'Create Profile' }}
-          </button>
-          {% if profile %}
-          <button type="button" class="btn btn-danger"
-                  onclick="if(confirm('Delete this profile?')) document.getElementById('deleteForm').submit();">
-            <i class="fa fa-trash"></i> Delete
-          </button>
-          {% endif %}
-        </div>
-
       </div>
     </div>
-  </form>
 
-  {% if profile %}
-  <form id="deleteForm" method="POST" action="{{ url_for('profiles.delete_profile', profile_id=profile.id) }}" style="display:none;"></form>
-  {% endif %}
+    <div class="col-lg-4">
+      <div class="card p-4">
+        <div class="card-title mb-3"><i class="fa fa-image me-2"></i>Photo</div>
+        <div id="photoPreview" class="mb-2"></div>
+        <input type="file" class="form-control form-control-sm" id="f-photo" accept="image/*">
+        <div class="form-text">Held in this browser, never uploaded. Max 8 MB.</div>
+        <button class="btn btn-ghost btn-xs mt-2" id="clearPhoto" style="display:none">
+          Remove photo
+        </button>
+      </div>
+
+      <div class="card p-4 mt-3">
+        <div class="card-title mb-3"><i class="fa fa-tags me-2"></i>Tags</div>
+        <div id="tagChecks"><p class="mon-note mb-0">No tags defined yet.</p></div>
+      </div>
+
+      <div class="card p-4 mt-3">
+        <div class="card-title mb-3"><i class="fa fa-chart-simple me-2"></i>Assessment</div>
+        <div id="radarInputs"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-flex gap-2 mt-4">
+    <button class="btn btn-primary" id="saveBtn">
+      <i class="fa fa-save"></i> Save profile
+    </button>
+    <a href="{{ url_for('profiles.list_profiles') }}" class="btn btn-ghost">Cancel</a>
+    <span class="text-danger ms-2" id="formErr" style="font-size:12px"></span>
+  </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-const PLATFORMS = {{ platforms | tojson }};
+window.PROFILE_FORM = {
+  mode: {{ mode|tojson }},
+  id: {{ (profile_id if profile_id is defined else None)|tojson }}
+};
+</script>
+<script>
+(function () {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-function previewPhoto(input) {
-  if (!input.files || !input.files[0]) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const wrap = document.getElementById('photoPreviewWrap');
-    wrap.innerHTML = `<img id="photoPreview" src="${e.target.result}"
-      style="width:140px; height:140px; border-radius:50%; object-fit:cover; border:3px solid var(--accent); box-shadow:0 0 20px rgba(0,229,255,0.2); margin:0 auto; display:block;">`;
-  };
-  reader.readAsDataURL(input.files[0]);
-}
+  const MODE = window.PROFILE_FORM.mode;
+  const ID = window.PROFILE_FORM.id;
+  const AXES = ['Academics', 'Physical', 'Social', 'Influence', 'Threat', 'Digital'];
 
-function addSocialRow() {
-  const opts = PLATFORMS.map(p => `<option value="${p}">${p}</option>`).join('');
-  const row = document.createElement('div');
-  row.className = 'social-edit-row d-flex gap-2 mb-2 align-items-center';
-  row.innerHTML = `
-    <select name="social_platform" class="form-select" style="width:140px; flex-shrink:0;">${opts}</select>
-    <input type="text" name="social_username" class="form-control" style="width:130px;" placeholder="@username">
-    <input type="url" name="social_url" class="form-control" placeholder="https://...">
-    <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('.social-edit-row').remove()">
-      <i class="fa fa-trash"></i>
-    </button>
-  `;
-  document.getElementById('socialLinksContainer').appendChild(row);
-}
+  let profile = null;
+  let pendingPhoto = null;   // a File chosen but not yet saved
+  let clearedPhoto = false;
+  let previewUrl = null;
 
-function toggleTagPill(checkbox) {
-  const tagId = checkbox.value;
-  const pill = document.querySelector(`.tag-pill-${tagId}`);
-  if (!pill) return;
-  if (checkbox.checked) {
-    pill.style.backgroundOpacity = '0.3';
-    pill.style.filter = 'brightness(1.3)';
-    const currentColor = pill.style.color;
-    pill.style.background = currentColor.replace(')', ', 0.25)').replace('rgb', 'rgba');
-    pill.style.borderColor = currentColor;
-  } else {
-    const currentColor = pill.style.color;
-    pill.style.background = currentColor.replace(')', ', 0.07)').replace('rgb', 'rgba');
-    pill.style.borderColor = currentColor.replace(')', ', 0.3)').replace('rgb', 'rgba');
+  function socialRow(link) {
+    const l = link || { platform: '', username: '', url: '' };
+    return '<div class="d-flex gap-2 mb-2 social-row">' +
+      '<input class="form-control form-control-sm" data-k="platform" ' +
+      'placeholder="Platform" value="' + esc(l.platform) + '" style="max-width:120px">' +
+      '<input class="form-control form-control-sm" data-k="username" ' +
+      'placeholder="@handle" value="' + esc(l.username) + '" style="max-width:150px">' +
+      '<input class="form-control form-control-sm" data-k="url" ' +
+      'placeholder="https://" value="' + esc(l.url) + '">' +
+      '<button class="btn btn-danger btn-xs" data-del-social>' +
+      '<i class="fa fa-trash"></i></button></div>';
   }
-}
+
+  function readSocial() {
+    return Array.from(document.querySelectorAll('.social-row')).map((row) => {
+      const o = {};
+      row.querySelectorAll('[data-k]').forEach((i) => { o[i.dataset.k] = i.value.trim(); });
+      return o;
+    }).filter((o) => o.platform || o.username || o.url);
+  }
+
+  async function renderTags() {
+    const tags = await Data.tags();
+    if (!tags.length) return;
+    const chosen = new Set((profile && profile.tag_ids) || []);
+    $('#tagChecks').innerHTML = tags.map((t) =>
+      '<label class="d-flex align-items-center gap-2 mb-2" style="font-size:12px;cursor:pointer">' +
+      '<input type="checkbox" data-tag="' + t.id + '"' + (chosen.has(t.id) ? ' checked' : '') + '>' +
+      '<span class="tag-chip" style="border-color:' + esc(t.color) + ';color:' +
+      esc(t.color) + '">' + esc(t.name) + '</span></label>').join('');
+  }
+
+  function renderRadar() {
+    const scores = ((profile && profile.radar) || {}).scores || [0, 0, 0, 0, 0, 0];
+    const labels = ((profile && profile.radar) || {}).labels || AXES;
+    $('#radarInputs').innerHTML = labels.map((label, i) =>
+      '<div class="mb-2"><div class="d-flex justify-content-between">' +
+      '<label class="form-label mb-1">' + esc(label) + '</label>' +
+      '<span style="font-size:11px;font-family:var(--font-mono);color:var(--accent)" ' +
+      'data-out="' + i + '">' + (scores[i] || 0) + '</span></div>' +
+      '<input type="range" class="form-range" min="0" max="100" ' +
+      'data-axis="' + i + '" value="' + (scores[i] || 0) + '"></div>').join('');
+    $('#radarInputs').addEventListener('input', (e) => {
+      const r = e.target.closest('[data-axis]');
+      if (r) document.querySelector('[data-out="' + r.dataset.axis + '"]').textContent = r.value;
+    });
+  }
+
+  async function showPhoto(id) {
+    if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+    const host = $('#photoPreview');
+    if (!id) {
+      host.innerHTML = '<div class="profile-card-photo-placeholder" ' +
+        'style="height:150px"><i class="fa fa-user fa-2x"></i></div>';
+      $('#clearPhoto').style.display = 'none';
+      return;
+    }
+    previewUrl = await Data.photoUrl(id);
+    host.innerHTML = previewUrl
+      ? '<img src="' + previewUrl + '" style="width:100%;border-radius:6px">'
+      : '';
+    $('#clearPhoto').style.display = '';
+  }
+
+  async function load() {
+    if (MODE === 'edit' && ID) {
+      profile = await Data.profile(ID);
+      if (!profile) {
+        $('#formErr').textContent = 'That profile is not in this browser.';
+        return;
+      }
+      $('#formTitle').innerHTML = 'Edit <span>' + esc(profile.codename) + '</span>';
+      document.title = profile.codename + ' — Edit profile';
+      ['codename', 'real_name', 'dob', 'nationality', 'occupation',
+       'physical_desc', 'bio_notes'].forEach((k) => {
+        const el = $('#f-' + k);
+        if (el) el.value = profile[k] || '';
+      });
+      $('#f-aliases').value = (profile.known_aliases || []).join(', ');
+      $('#socialRows').innerHTML = (profile.social_links || []).map(socialRow).join('')
+        || socialRow(null);
+      await showPhoto(profile.photo_id);
+    } else {
+      $('#socialRows').innerHTML = socialRow(null);
+      await showPhoto(null);
+    }
+    await renderTags();
+    renderRadar();
+  }
+
+  $('#addSocial').addEventListener('click', () => {
+    $('#socialRows').insertAdjacentHTML('beforeend', socialRow(null));
+  });
+  $('#socialRows').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-del-social]');
+    if (b) b.closest('.social-row').remove();
+  });
+
+  $('#f-photo').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type)) {
+      showToast('That file is not an image', 'danger');
+      e.target.value = '';
+      return;
+    }
+    pendingPhoto = file;
+    clearedPhoto = false;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(file);
+    $('#photoPreview').innerHTML = '<img src="' + previewUrl +
+      '" style="width:100%;border-radius:6px">';
+    $('#clearPhoto').style.display = '';
+  });
+
+  $('#clearPhoto').addEventListener('click', async () => {
+    pendingPhoto = null;
+    clearedPhoto = true;
+    $('#f-photo').value = '';
+    await showPhoto(null);
+  });
+
+  $('#saveBtn').addEventListener('click', async () => {
+    const btn = $('#saveBtn');
+    $('#formErr').textContent = '';
+    const codename = $('#f-codename').value.trim();
+    if (!codename) { $('#formErr').textContent = 'A codename is required.'; return; }
+
+    btn.disabled = true;
+    try {
+      const scores = Array.from(document.querySelectorAll('[data-axis]'))
+        .map((r) => parseInt(r.value, 10) || 0);
+      const fields = {
+        id: (MODE === 'edit' && ID) ? ID : undefined,
+        codename,
+        real_name: $('#f-real_name').value.trim(),
+        dob: $('#f-dob').value.trim(),
+        nationality: $('#f-nationality').value.trim(),
+        occupation: $('#f-occupation').value.trim(),
+        physical_desc: $('#f-physical_desc').value.trim(),
+        bio_notes: $('#f-bio_notes').value.trim(),
+        known_aliases: $('#f-aliases').value.split(',')
+          .map((a) => a.trim()).filter(Boolean),
+        social_links: readSocial(),
+        tag_ids: Array.from(document.querySelectorAll('[data-tag]:checked'))
+          .map((c) => Number(c.dataset.tag)),
+        radar: { labels: AXES, scores },
+        photo_id: clearedPhoto ? null : (profile ? profile.photo_id : null),
+        created_at: profile ? profile.created_at : undefined,
+      };
+
+      if (clearedPhoto && profile && profile.photo_id) {
+        await Store.deletePhoto(profile.photo_id);
+      }
+      const saved = await Data.saveProfile(fields);
+      if (pendingPhoto) await Data.setProfilePhoto(saved.id, pendingPhoto);
+
+      showToast('Profile saved', 'success');
+      window.location = '/profiles/' + saved.id;
+    } catch (e) {
+      $('#formErr').textContent = e.message;
+      btn.disabled = false;
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+  });
+
+  load();
+})();
 </script>
 {% endblock %}

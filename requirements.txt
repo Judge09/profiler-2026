@@ -1,8 +1,16 @@
+# Core — required. These are all that is needed to run the app.
 flask==3.1.0
 flask-sqlalchemy==3.1.1
-pillow==11.1.0
 requests==2.32.3
 cryptography==46.0.5
-playwright==1.62.0
-# playwright also needs its browser binary:
+pillow==11.1.0
+
+# Optional extras live in requirements-extra.txt. Every one of them is
+# feature-detected at runtime (see app/monitor/capabilities.py), so the app
+# runs correctly without any of them and reports what is missing rather than
+# failing or silently returning nothing.
+#
+#   pip install -r requirements-extra.txt
+#
+# Browser automation additionally needs its binary:
 #   python -m playwright install chromium

@@ -2,8 +2,38 @@
 .mon-grid { display: grid; grid-template-columns: 330px 1fr; gap: 18px; align-items: start; }
 @media (max-width: 1100px) { .mon-grid { grid-template-columns: 1fr; } }
 
-.mon-side { position: sticky; top: 0; max-height: calc(100vh - 32px); overflow-y: auto; padding-right: 4px; }
+/* The settings column.
+ *
+ * It used to be `position: sticky` with its own `overflow-y: auto`, which made
+ * it a second scroll container nested inside `.main-content`. Two scrollers
+ * side by side fight over the wheel: putting the cursor over the sidebar
+ * scrolled the sidebar instead of the page, so the collection panel further
+ * down the page was awkward to reach and felt unclickable.
+ *
+ * Letting the column scroll with the page removes the conflict entirely. On
+ * tall screens it still sticks, but only below the header and without
+ * trapping the wheel -- `overscroll-behavior` hands the scroll back to the
+ * page once the column reaches its end. */
+.mon-side { padding-right: 4px; }
 .mon-side .card { margin-bottom: 14px; }
+
+@media (min-height: 1400px) and (min-width: 1101px) {
+  /* Only on screens tall enough for the whole column to fit, so it never
+     becomes a nested scroller competing with the page. */
+  .mon-side {
+    position: sticky;
+    top: 12px;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* A thin scrollbar, so the column does not look like a separate pane. */
+    scrollbar-width: thin;
+  }
+  .mon-side::-webkit-scrollbar { width: 6px; }
+  .mon-side::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 3px;
+  }
+}
 
 .mon-dist { display: flex; height: 12px; border-radius: 3px; overflow: hidden; background: var(--border); gap: 2px; margin: 10px 0; }
 .mon-dist span { transition: flex-grow .6s cubic-bezier(.2,.7,.2,1); flex-grow: 0; flex-basis: 0; }
@@ -192,3 +222,123 @@
 
 .mon-scroll { max-height: 260px; overflow-y: auto; }
 .mon-sticky-actions { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg-deep) 40%); padding-top: 10px; }
+
+/* ── Keyword editor ───────────────────────────────────────────────────────
+   Three buckets of chips. Required is the anchor, optional broadens, excluded
+   rejects -- the colours carry that meaning so the rule is readable at a
+   glance rather than only in the help text. */
+.mon-kw-group { border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; margin-bottom: 6px; background: var(--bg-input); }
+.mon-kw-group .h { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); display: flex; align-items: center; gap: 5px; margin-bottom: 5px; }
+.mon-kw-group .h i { color: var(--accent); font-size: 10px; }
+.mon-kw-group .h small { margin-left: auto; text-transform: none; letter-spacing: 0; font-size: 10px; color: var(--text-faint); }
+.mon-kw-group.excl { border-color: rgba(255,64,96,.3); }
+.mon-kw-group.excl .h i { color: var(--red); }
+.mon-kw-group .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px; }
+.mon-kw-group input { font-size: 12px; }
+
+.mon-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 4px 2px 8px; border-radius: 11px; background: var(--accent-dim); border: 1px solid rgba(0,229,255,.35); font-size: 11.5px; color: var(--text); max-width: 100%; }
+.mon-chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; font-family: var(--font-mono); }
+.mon-chip .x { border: 0; background: transparent; color: var(--text-dim); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 50%; }
+.mon-chip .x:hover { color: var(--red); background: rgba(255,64,96,.15); }
+.mon-kw-group.excl .mon-chip { background: rgba(255,64,96,.1); border-color: rgba(255,64,96,.4); }
+.mon-kw-group[data-bucket="optional"] .mon-chip { background: var(--bg-card2); border-color: var(--border); }
+.mon-chip-empty { font-size: 11px; color: var(--text-faint); font-style: italic; }
+
+.mon-kw-mode { display: inline-flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+.mon-kw-mode button { border: 0; background: var(--bg-input); color: var(--text-dim); font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 3px 9px; cursor: pointer; }
+.mon-kw-mode button.on { background: var(--accent); color: #04121a; }
+
+/* ── Toolbar and pagination ───────────────────────────────────────────── */
+.mon-toolbar { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+
+.mon-pager { display: flex; gap: 4px; align-items: center; justify-content: center; flex-wrap: wrap; margin: 16px 0 6px; }
+.mon-pager button { min-width: 32px; height: 30px; padding: 0 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-dim); border-radius: 5px; font-size: 12px; font-family: var(--font-mono); cursor: pointer; transition: border-color .15s, color .15s; }
+.mon-pager button:hover:not(:disabled):not(.on) { border-color: var(--accent); color: var(--text); }
+.mon-pager button.on { background: var(--accent); border-color: var(--accent); color: #04121a; font-weight: 700; }
+.mon-pager button:disabled { opacity: .3; cursor: default; }
+.mon-pager .gap { color: var(--text-faint); padding: 0 2px; }
+
+/* ── Source picker ────────────────────────────────────────────────────── */
+.mon-src-group { margin-bottom: 10px; }
+.mon-src-head { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-dim); margin-bottom: 5px; display: flex; align-items: center; gap: 6px; }
+.mon-src-head .btn { padding: 0 5px; font-size: 10px; }
+/* A source needing a library that is not installed stays selectable: it will
+   explain itself in the run report, which beats a tile that does nothing. */
+.mon-src-item.unavailable { opacity: .55; border-style: dashed; }
+.mon-src-item .d.cap { color: var(--yellow); font-size: 10px; margin-top: 3px; }
+.mon-src-item .d.cap.warn { color: var(--red); }
+
+.mon-report .ms { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+
+/* ── Capability report ────────────────────────────────────────────────── */
+.mon-caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.mon-cap { border: 1px solid var(--border); border-radius: 6px; padding: 9px 11px; background: var(--bg-input); }
+.mon-cap.on { border-color: rgba(0,255,153,.3); }
+.mon-cap.off { opacity: .75; }
+.mon-cap .t { font-size: 12.5px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.mon-cap.on .t i { color: var(--green); } .mon-cap.off .t i { color: var(--text-faint); }
+.mon-cap .role { margin-left: auto; font-size: 10px; font-weight: 400; color: var(--text-dim); }
+.mon-cap .u { font-size: 11.5px; color: var(--text-dim); line-height: 1.45; margin-top: 4px; }
+.mon-cap .why { font-size: 11px; color: var(--yellow); margin-top: 4px; }
+.mon-cap .why.warn { color: var(--red); }
+
+/* ── Geo and phishing panels ──────────────────────────────────────────── */
+.mon-geo-row, .mon-phish-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); margin-bottom: 6px; }
+.mon-phish-row.malicious { border-left: 3px solid var(--red); }
+.mon-phish-row.suspicious { border-left: 3px solid var(--yellow); }
+.mon-geo-row .cc { font-family: var(--font-mono); font-weight: 800; font-size: 13px; color: var(--accent); min-width: 30px; }
+.mon-geo-row .body, .mon-phish-row .body { min-width: 0; flex: 1; }
+.mon-geo-row .host, .mon-phish-row .host { font-family: var(--font-mono); font-size: 11.5px; color: var(--text); word-break: break-all; }
+.mon-geo-row .meta, .mon-phish-row .meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.mon-phish-row .sc { font-family: var(--font-mono); font-weight: 800; font-size: 15px; min-width: 28px; text-align: right; }
+.mon-phish-row.malicious .sc { color: var(--red); } .mon-phish-row.suspicious .sc { color: var(--yellow); }
+.mon-phish-reasons { margin: 4px 0 0; padding-left: 15px; font-size: 11px; color: var(--text-dim); }
+.mon-phish-reasons li { margin-bottom: 1px; }
+
+/* World map. Plain SVG so it stays theme-aware and needs no library. */
+.mon-map { width: 100%; height: auto; background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; }
+.mon-map .dot { fill: var(--red); fill-opacity: .75; stroke: var(--bg-deep); stroke-width: .5; }
+.mon-map .land { fill: #16162a; stroke: #23233d; stroke-width: .4; }
+
+/* Storage warning, shown when the deployment cannot persist data. */
+.mon-storage-warn { background: rgba(255,64,96,.08); border: 1px solid rgba(255,64,96,.35); border-radius: 6px; padding: 10px 13px; font-size: 12px; display: flex; gap: 9px; align-items: flex-start; margin-bottom: 14px; }
+.mon-storage-warn i { color: var(--red); margin-top: 2px; }
+
+/* ── Storage bar ───────────────────────────────────────────────────────────
+   Browser storage is the system of record, so its state is stated plainly on
+   the page rather than hidden in settings. Amber until the origin has been
+   granted persistence, because until then the browser may evict the data. */
+.mon-storage-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 9px 13px; border-radius: 6px; font-size: 12px; margin-bottom: 14px; background: rgba(255,214,0,.07); border: 1px solid rgba(255,214,0,.3); }
+.mon-storage-bar.ok { background: rgba(0,255,153,.06); border-color: rgba(0,255,153,.28); }
+.mon-storage-bar i { color: var(--yellow); }
+.mon-storage-bar.ok i { color: var(--green); }
+.mon-storage-bar .txt { flex: 1; min-width: 220px; color: var(--text-dim); }
+.mon-storage-bar .txt b { color: var(--text); }
+
+
+/* ── Source picker ─────────────────────────────────────────────────────────
+   26 sources rendered as tiles pushed the query box and the Collect button
+   past the fold, so the thing you came to click was never on screen. The list
+   now collapses behind a summary that names what is selected. */
+.mon-src-picker { border: 1px solid var(--border); border-radius: 7px; background: var(--bg-input); margin-bottom: 10px; }
+
+.mon-src-summary { width: 100%; display: flex; align-items: center; gap: 9px; padding: 10px 13px; background: none; border: 0; color: var(--text); text-align: left; cursor: pointer; font-size: 13px; border-radius: 7px; }
+.mon-src-summary:hover { background: var(--bg-card2); }
+.mon-src-summary .caret { color: var(--text-dim); font-size: 11px; transition: transform .15s; flex: none; }
+.mon-src-summary[aria-expanded="true"] .caret { transform: rotate(90deg); }
+.mon-src-summary .lbl { font-weight: 700; flex: none; }
+.mon-src-summary .count { font-family: var(--font-mono); font-size: 11px; color: var(--accent); background: var(--accent-dim); border: 1px solid rgba(0,229,255,.3); padding: 1px 8px; border-radius: 10px; flex: none; }
+.mon-src-summary .names { color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.mon-src-summary .hint { color: var(--text-faint); font-size: 11px; flex: none; }
+.mon-src-summary.none-selected .count { color: var(--yellow); background: rgba(255,214,0,.1); border-color: rgba(255,214,0,.35); }
+
+.mon-src-body { padding: 4px 13px 12px; border-top: 1px solid var(--border); }
+.mon-src-quick { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 9px 0; }
+
+/* Keyboard selection must look the same as a click. */
+.mon-src-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* An empty watch briefs on nothing, so it collapses to a single line rather
+   than reserving 345px for a panel of zeroes. */
+.mon-brief.empty .mon-brief-head { border-bottom: 0; }
+.mon-brief.empty h3 { font-size: 15px; }

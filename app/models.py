@@ -232,7 +232,15 @@ class MonitorWatch(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.Text, nullable=False)
     subject = db.Column(db.Text)
+
+    # Keywords. `keywords` stays the canonical comma string for backward
+    # compatibility; the three columns below are the structured form the UI
+    # edits and the engine prefers when present.
     keywords = db.Column(db.Text, default="")
+    kw_required = db.Column(db.Text, default="")   # newline separated, all must match
+    kw_optional = db.Column(db.Text, default="")   # newline separated, broaden only
+    kw_excluded = db.Column(db.Text, default="")   # newline separated, reject on match
+    kw_match_mode = db.Column(db.Text, default="all")  # all / any -- for required terms
 
     # Media Release Threat mode
     mode_release = db.Column(db.Boolean, default=False)
@@ -282,6 +290,10 @@ class MonitorWatch(db.Model):
             "name": self.name,
             "subject": self.subject,
             "keywords": self.keywords,
+            "kw_required": self.kw_required or "",
+            "kw_optional": self.kw_optional or "",
+            "kw_excluded": self.kw_excluded or "",
+            "kw_match_mode": self.kw_match_mode or "all",
             "mode_release": self.mode_release,
             "mode_hunter": self.mode_hunter,
             "mode_label": self.mode_label,
@@ -326,6 +338,18 @@ class MonitorPost(db.Model):
     analyst_note = db.Column(db.Text, default="")
     status = db.Column(db.Text, default="new")  # new / reviewed / escalated / dismissed
     pinned = db.Column(db.Boolean, default=False)
+
+    # Cached scoring. Filled by the engine and reused until the watch's rules
+    # change (tracked by `cache_rules_hash`) or the post itself is edited.
+    # Keeping the verdict in a column is what lets the dashboard, the watch
+    # list and pagination run as plain SQL instead of rescoring every post.
+    cached_score = db.Column(db.Integer, index=True)
+    cached_verdict = db.Column(db.Text, index=True)
+    cached_types = db.Column(db.Text, default="")
+    cached_relevant = db.Column(db.Boolean, default=True)
+    cached_json = db.Column(db.Text)
+    cache_rules_hash = db.Column(db.Text, index=True)
+    posted_ts = db.Column(db.DateTime, index=True)  # parsed posted_at, for sorting
 
     linked_profile = db.relationship("Profile", foreign_keys=[profile_id], lazy=True)
 

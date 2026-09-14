@@ -14,47 +14,8 @@
   <button class="btn btn-primary" id="btnNewWatch"><i class="fa fa-plus me-1"></i> New watch</button>
 </div>
 
-{% if summary %}
-<div class="row g-3">
-  {% for s in summary %}
-  <div class="col-md-6 col-xl-4">
-    <a class="mon-watch-card" href="{{ url_for('monitor.watch_detail', watch_id=s.watch.id) }}">
-      <div class="d-flex justify-content-between align-items-start gap-2">
-        <div style="min-width:0">
-          <h5>{{ s.watch.name }}</h5>
-          <div class="sub">{{ s.watch.subject or 'no subject' }}</div>
-        </div>
-        <div class="d-flex flex-column gap-1 align-items-end">
-          {% if s.watch.mode_release %}<span class="mon-mode-chip release"><i class="fa fa-bullhorn"></i> Release</span>{% endif %}
-          {% if s.watch.mode_hunter %}<span class="mon-mode-chip hunter"><i class="fa fa-crosshairs"></i> Hunter</span>{% endif %}
-          {% if not s.watch.mode_release and not s.watch.mode_hunter %}<span class="mon-mode-chip std">Standard</span>{% endif %}
-        </div>
-      </div>
-
-      <div class="mon-dist">
-        <span class="d-bad" style="flex-grow:{{ s.counts.bad }}"></span>
-        <span class="d-warn" style="flex-grow:{{ s.counts.warn }}"></span>
-        <span class="d-ok" style="flex-grow:{{ s.counts.ok }}"></span>
-      </div>
-
-      <div class="mon-stat">
-        <div class="n-bad"><b>{{ s.counts.bad }}</b> High</div>
-        <div class="n-warn"><b>{{ s.counts.warn }}</b> Review</div>
-        <div class="n-ok"><b>{{ s.counts.ok }}</b> Clear</div>
-        <div class="ms-auto text-end"><b style="color:var(--text-dim)">{{ s.total }}</b> Posts</div>
-      </div>
-    </a>
-  </div>
-  {% endfor %}
-</div>
-{% else %}
-<div class="mon-empty">
-  <i class="fa fa-satellite-dish fa-2x mb-3 d-block" style="opacity:.3"></i>
-  <p class="mb-1">No watches yet.</p>
-  <p style="font-size:12px">A watch is a saved monitoring case: keywords to look for, sources to pull from, and how to score what turns up.</p>
-  <button class="btn btn-primary btn-sm mt-2" onclick="document.getElementById('btnNewWatch').click()">Create the first watch</button>
-</div>
-{% endif %}
+<div id="storageBar"></div>
+<div id="watchList"><div class="mon-empty">Loading watches…</div></div>
 
 <!-- New watch modal -->
 <div class="modal fade" id="newWatchModal" tabindex="-1">
@@ -74,10 +35,26 @@
             <label class="form-label">Subject</label>
             <input class="form-control" id="w-subject" placeholder="Organization or person being monitored">
           </div>
+          <div class="col-md-6">
+            <label class="form-label">Required keywords</label>
+            <input class="form-control" id="w-required" placeholder="APC, Bangsamoro">
+            <div class="form-text">
+              The terms that put a post on topic. Be specific — a post must
+              match these to be kept.
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Optional keywords</label>
+            <input class="form-control" id="w-optional" placeholder="cybersecurity, election">
+            <div class="form-text">
+              Broaden the search. Generic words belong here — on their own they
+              never make a post relevant.
+            </div>
+          </div>
           <div class="col-12">
-            <label class="form-label">Keywords</label>
-            <input class="form-control" id="w-keywords" placeholder="APC, cybersecurity, cyber awareness">
-            <div class="form-text">Comma separated. Used to search live sources and to decide whether a post is relevant.</div>
+            <label class="form-label">Excluded keywords</label>
+            <input class="form-control" id="w-excluded" placeholder="cricket, football">
+            <div class="form-text">Any post mentioning these is rejected outright.</div>
           </div>
           <div class="col-md-6">
             <label class="form-label">Link to profile</label>
@@ -129,43 +106,183 @@
 
 {% block scripts %}
 <script>
-const modal = new bootstrap.Modal('#newWatchModal');
-document.getElementById('btnNewWatch').addEventListener('click', () => {
-  document.getElementById('w-err').textContent = '';
-  modal.show();
-});
+/* Watches live in this browser (IndexedDB). The server is only asked to score
+   and to fetch; it stores nothing. */
+(function () {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-function syncToggle(id, togId) {
-  const cb = document.getElementById(id), tog = document.getElementById(togId);
-  cb.addEventListener('change', () => {
-    tog.classList.toggle('on', cb.checked);
-    if (id === 'w-release') {
-      document.getElementById('release-fields').style.display = cb.checked ? '' : 'none';
+  const modal = new bootstrap.Modal('#newWatchModal');
+  $('#btnNewWatch').addEventListener('click', () => {
+    $('#w-err').textContent = '';
+    modal.show();
+  });
+
+  function syncToggle(id, togId) {
+    const cb = $('#' + id), tog = $('#' + togId);
+    cb.addEventListener('change', () => {
+      tog.classList.toggle('on', cb.checked);
+      if (id === 'w-release') {
+        $('#release-fields').style.display = cb.checked ? '' : 'none';
+      }
+    });
+  }
+  syncToggle('w-release', 'tog-release');
+  syncToggle('w-hunter', 'tog-hunter');
+
+  // A comma list in the form becomes one term per line in storage.
+  const lines = (id) => $('#' + id).value
+    .split(',').map((t) => t.trim()).filter(Boolean).join('\n');
+
+  $('#w-save').addEventListener('click', async () => {
+    const name = $('#w-name').value.trim();
+    if (!name) { $('#w-err').textContent = 'Give the watch a name.'; return; }
+    try {
+      const w = await Data.createWatch({
+        name,
+        subject: $('#w-subject').value.trim(),
+        kw_required: lines('w-required'),
+        kw_optional: lines('w-optional'),
+        kw_excluded: lines('w-excluded'),
+        kw_match_mode: 'any',
+        mode_release: $('#w-release').checked,
+        mode_hunter: $('#w-hunter').checked,
+        reference_text: $('#w-reference').value,
+        profile_id: $('#w-profile').value ? Number($('#w-profile').value) : null,
+      });
+      window.location = '/monitor/watch?id=' + w.id;
+    } catch (e) {
+      $('#w-err').textContent = e.message;
     }
   });
-}
-syncToggle('w-release', 'tog-release');
-syncToggle('w-hunter', 'tog-hunter');
 
-document.getElementById('w-save').addEventListener('click', async () => {
-  const name = document.getElementById('w-name').value.trim();
-  if (!name) { document.getElementById('w-err').textContent = 'Give the watch a name.'; return; }
-  const body = {
-    name,
-    subject: document.getElementById('w-subject').value.trim(),
-    keywords: document.getElementById('w-keywords').value.trim(),
-    mode_release: document.getElementById('w-release').checked,
-    mode_hunter: document.getElementById('w-hunter').checked,
-    reference_text: document.getElementById('w-reference').value,
-    profile_id: document.getElementById('w-profile').value || null,
-  };
-  const res = await fetch('{{ url_for("monitor.create_watch") }}', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const data = await res.json();
-  if (!res.ok) { document.getElementById('w-err').textContent = data.error || 'Could not create the watch.'; return; }
-  window.location = '/monitor/' + data.id;
-});
+  function card(w, counts, pending) {
+    const total = counts.bad + counts.warn + counts.ok;
+    const chips =
+      (w.mode_release ? '<span class="mon-mode-chip release"><i class="fa fa-bullhorn"></i> Release</span>' : '') +
+      (w.mode_hunter ? '<span class="mon-mode-chip hunter"><i class="fa fa-crosshairs"></i> Hunter</span>' : '') +
+      (!w.mode_release && !w.mode_hunter ? '<span class="mon-mode-chip std">Standard</span>' : '');
+    return '<div class="col-md-6 col-xl-4">' +
+      '<a class="mon-watch-card" href="/monitor/watch?id=' + w.id + '">' +
+      '<div class="d-flex justify-content-between align-items-start gap-2">' +
+        '<div style="min-width:0"><h5>' + esc(w.name) + '</h5>' +
+        '<div class="sub">' + esc(w.subject || 'no subject') + '</div></div>' +
+        '<div class="d-flex flex-column gap-1 align-items-end">' + chips + '</div>' +
+      '</div>' +
+      '<div class="mon-dist">' +
+        '<span class="d-bad" style="flex-grow:' + counts.bad + '"></span>' +
+        '<span class="d-warn" style="flex-grow:' + counts.warn + '"></span>' +
+        '<span class="d-ok" style="flex-grow:' + counts.ok + '"></span>' +
+      '</div>' +
+      '<div class="mon-stat">' +
+        '<div class="n-bad"><b>' + counts.bad + '</b> High</div>' +
+        '<div class="n-warn"><b>' + counts.warn + '</b> Review</div>' +
+        '<div class="n-ok"><b>' + counts.ok + '</b> Clear</div>' +
+        '<div class="ms-auto text-end"><b style="color:var(--text-dim)">' + total + '</b> Posts</div>' +
+      '</div>' +
+      (pending ? '<div class="mon-note mt-1" style="color:var(--accent)">' +
+        '<i class="fa fa-inbox me-1"></i>' + pending + ' flagged and still untriaged</div>' : '') +
+      '</a></div>';
+  }
+
+  async function render() {
+    const watches = await Data.watches();
+    const host = $('#watchList');
+
+    if (!watches.length) {
+      host.innerHTML = '<div class="mon-empty">' +
+        '<i class="fa fa-satellite-dish fa-2x mb-3 d-block" style="opacity:.3"></i>' +
+        '<p class="mb-1">No watches yet.</p>' +
+        '<p style="font-size:12px">A watch is a saved monitoring case: keywords to ' +
+        'look for, sources to pull from, and how to score what turns up.</p>' +
+        '<button class="btn btn-primary btn-sm mt-2" onclick="document.getElementById(\'btnNewWatch\').click()">' +
+        'Create the first watch</button></div>';
+      return;
+    }
+
+    const cards = [];
+    for (const w of watches) {
+      const counts = await Store.countsFor(w.id);
+      const rows = await Store.byIndex('posts', 'watch_id', IDBKeyRange.only(w.id));
+      const pending = rows.filter((p) =>
+        Store.effVerdict(p) !== 'ok' && (p.status || 'new') === 'new').length;
+      cards.push(card(w, counts, pending));
+    }
+    host.innerHTML = '<div class="row g-3">' + cards.join('') + '</div>';
+  }
+
+  // Storage is the one thing a user must understand about this app, so it is
+  // stated on the landing page rather than buried in a settings screen.
+  async function storageBar() {
+    const u = await Data.storage();
+    const st = await Data.stats();
+    if (!u.supported) {
+      $('#storageBar').innerHTML = '<div class="mon-storage-warn">' +
+        '<i class="fa fa-triangle-exclamation"></i><span>This browser cannot ' +
+        'report storage usage, and may not keep data reliably. Export a backup ' +
+        'regularly.</span></div>';
+      return;
+    }
+    const mb = (n) => (n / 1048576).toFixed(1);
+    $('#storageBar').innerHTML =
+      '<div class="mon-storage-bar' + (u.persisted ? ' ok' : '') + '">' +
+      '<i class="fa ' + (u.persisted ? 'fa-hard-drive' : 'fa-triangle-exclamation') + '"></i>' +
+      '<span class="txt"><b>' + st.posts + '</b> posts and <b>' + st.watches +
+      '</b> watch' + (st.watches === 1 ? '' : 'es') + ' stored in this browser · ' +
+      mb(u.usage) + ' MB of ' + mb(u.quota) + ' MB' +
+      (u.persisted
+        ? ' · protected from automatic cleanup'
+        : ' · <b>not protected</b> — the browser may clear this to free space') +
+      '</span>' +
+      (u.persisted ? '' : '<button class="btn btn-outline btn-xs" id="btnPersist">Protect</button>') +
+      '<button class="btn btn-ghost btn-xs" id="btnBackup">Export backup</button>' +
+      '<button class="btn btn-ghost btn-xs" id="btnRestore">Restore</button>' +
+      '<input type="file" id="restoreFile" accept="application/json" hidden>' +
+      '</div>';
+
+    const persist = $('#btnPersist');
+    if (persist) {
+      persist.addEventListener('click', async () => {
+        const ok = await Data.requestPersistence();
+        showToast(ok ? 'This browser will now keep the data unless you clear it'
+                     : 'The browser declined. Export backups instead.',
+                  ok ? 'success' : 'warning');
+        storageBar();
+      });
+    }
+    $('#btnBackup').addEventListener('click', async () => {
+      const counts = await Data.downloadBackup();
+      showToast('Exported ' + counts.posts + ' posts and ' + counts.watches + ' watches',
+                'success');
+    });
+    $('#btnRestore').addEventListener('click', () => $('#restoreFile').click());
+    $('#restoreFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (!await confirmModal('Restore from this backup? Everything currently ' +
+          'in this browser is replaced.', 'Restore')) { e.target.value = ''; return; }
+      try {
+        const payload = JSON.parse(await file.text());
+        const stats = await Data.importBackup(payload, true);
+        showToast('Restored ' + (stats.posts || 0) + ' posts', 'success');
+        render(); storageBar();
+      } catch (err) {
+        showToast('Could not read that backup: ' + err.message, 'danger');
+      }
+      e.target.value = '';
+    });
+  }
+
+  // A storage failure must leave a usable page, not a permanent "Loading…".
+  render()
+    .then(storageBar)
+    .catch((e) => {
+      document.getElementById('watchList').innerHTML =
+        '<div class="mon-empty">Could not read this browser&#39;s storage. ' +
+        esc(e.message) + '</div>';
+    });
+})();
 </script>
 {% endblock %}

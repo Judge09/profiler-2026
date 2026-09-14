@@ -5,7 +5,7 @@
 <div class="page-header d-flex align-items-center justify-content-between">
   <div>
     <div class="page-title">Profile <span>Dossiers</span></div>
-    <div class="page-subtitle">{{ profiles|length }} subject(s) in database</div>
+    <div class="page-subtitle" id="profileCount">…</div>
   </div>
   <div class="d-flex gap-2">
     <a href="{{ url_for('profiles.new_profile') }}" class="btn btn-primary">
@@ -18,141 +18,41 @@
 </div>
 
 <div class="page-body">
-  <!-- Search, sort & filter bar -->
   <div class="d-flex gap-3 mb-4 align-items-center flex-wrap">
-    <form method="GET" class="search-bar" id="searchForm">
+    <div class="search-bar">
       <i class="fa fa-search search-icon"></i>
-      <input type="text" name="q" value="{{ q }}" class="form-control"
+      <input type="text" id="q" class="form-control"
              placeholder="Search codename, name…" style="width:240px;">
-      <input type="hidden" name="tag" value="{{ tag_filter }}">
-      <input type="hidden" name="sort" value="{{ sort }}" id="sortHidden">
-    </form>
+    </div>
 
-    <!-- Sort -->
-    <select class="sort-select" onchange="applySort(this.value)">
-      <option value="date"   {% if sort == 'date'   %}selected{% endif %}>Sort: Latest</option>
-      <option value="name"   {% if sort == 'name'   %}selected{% endif %}>Sort: A–Z</option>
-      <option value="threat" {% if sort == 'threat' %}selected{% endif %}>Sort: Threat ↓</option>
+    <select class="sort-select" id="sortSel">
+      <option value="date">Sort: Latest</option>
+      <option value="name">Sort: A–Z</option>
+      <option value="threat">Sort: Threat ↓</option>
     </select>
 
-    <!-- Tag pills -->
-    <div class="d-flex gap-2 flex-wrap">
-      <a href="{{ url_for('profiles.list_profiles', q=q, sort=sort) }}"
-         class="dork-pill {% if not tag_filter %}active{% endif %}">All</a>
-      {% for tag in tags %}
-      <a href="{{ url_for('profiles.list_profiles', q=q, sort=sort, tag=tag.name) }}"
-         class="dork-pill {% if tag_filter == tag.name %}active{% endif %}"
-         style="{% if tag_filter == tag.name %}border-color:{{ tag.color }};color:{{ tag.color }};{% endif %}">
-        {{ tag.name }}
-      </a>
-      {% endfor %}
-    </div>
+    <div class="d-flex gap-2 flex-wrap" id="tagPills"></div>
   </div>
 
-  {% if profiles %}
-  <div class="profile-grid">
-    {% for p in profiles %}
-    <a href="{{ url_for('profiles.detail', profile_id=p.id) }}" class="profile-card">
-      {% if p.photo_path %}
-      <img src="{{ url_for('static', filename=p.photo_path) }}" class="profile-card-photo" alt="">
-      {% else %}
-      <div class="profile-card-photo-placeholder"><i class="fa fa-user"></i></div>
-      {% endif %}
-
-      <div class="profile-card-info">
-        <div class="profile-card-codename">{{ p.codename }}</div>
-        {% if p.real_name %}
-        <div class="profile-card-realname">{{ p.real_name }}</div>
-        {% endif %}
-
-        {% if p.radar_config %}
-        <div class="d-flex align-items-center gap-2 mt-2">
-          <span style="font-size:10px; color:var(--text-faint);">{{ p.radar_config.axis5_label|upper }}</span>
-          <span style="font-size:13px; font-weight:700; color:var(--red); font-family:var(--font-mono);">
-            {{ p.radar_config.axis5_score | int }}/10
-          </span>
-        </div>
-        {% endif %}
-
-        <!-- Stat counts -->
-        <div class="profile-card-stats">
-          {% if p.social_links %}
-          <span class="profile-card-stat">
-            <i class="fa fa-share-nodes"></i> {{ p.social_links|length }}
-          </span>
-          {% endif %}
-          {% if p.intel_notes %}
-          <span class="profile-card-stat">
-            <i class="fa fa-terminal"></i> {{ p.intel_notes|length }}
-          </span>
-          {% endif %}
-          <span class="profile-card-stat">
-            <i class="fa fa-clock"></i> {{ p.created_at.strftime('%b %d') }}
-          </span>
-        </div>
-
-        <div class="profile-card-tags mt-1">
-          {% for tag in p.tags[:4] %}
-          <span class="badge-tag" style="background:{{ tag.color }}22; color:{{ tag.color }}; border:1px solid {{ tag.color }}44;">
-            {{ tag.name }}
-          </span>
-          {% endfor %}
-        </div>
-      </div>
-    </a>
-    {% endfor %}
-  </div>
-
-  {% else %}
-  <div class="empty-state">
-    <div><i class="fa fa-id-card"></i></div>
-    <h3>No profiles found</h3>
-    <p>{% if q %}No results for "{{ q }}".{% else %}Create your first profile to get started.{% endif %}</p>
-    {% if not q %}
-    <a href="{{ url_for('profiles.new_profile') }}" class="btn btn-outline mt-3">
-      <i class="fa fa-plus"></i> Create Profile
-    </a>
-    {% endif %}
-  </div>
-  {% endif %}
+  <div id="profileList"><div class="mon-empty">Loading profiles…</div></div>
 </div>
 
-<!-- Tag Management Modal -->
+<!-- Tag manager -->
 <div class="modal fade" id="tagModal" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content" style="background:var(--bg-card); border:1px solid var(--border);">
-      <div class="modal-header" style="border-bottom:1px solid var(--border);">
-        <h5 class="modal-title" style="font-size:13px; font-weight:700; letter-spacing:1px; text-transform:uppercase;">
-          <i class="fa fa-tags me-2 text-accent"></i>Manage Tags
-        </h5>
+  <div class="modal-dialog">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title">Tags</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <div id="tagList" class="mb-3">
-          {% for tag in tags %}
-          <div class="d-flex align-items-center gap-2 mb-2" id="tag-row-{{ tag.id }}">
-            <span class="badge-tag" style="background:{{ tag.color }}22; color:{{ tag.color }}; border:1px solid {{ tag.color }}44; min-width:80px; text-align:center;">
-              {{ tag.name }}
-            </span>
-            <span style="font-size:11px; color:var(--text-faint);">{{ tag.profiles|length }} profiles</span>
-            <button class="btn btn-xs btn-danger ms-auto" onclick="deleteTag({{ tag.id }})">
-              <i class="fa fa-trash"></i>
-            </button>
-          </div>
-          {% endfor %}
+        <div class="d-flex gap-2 mb-3">
+          <input class="form-control form-control-sm" id="newTagName" placeholder="Tag name">
+          <input type="color" class="form-control form-control-sm" id="newTagColor"
+                 value="#00ff99" style="width:52px;padding:3px">
+          <button class="btn btn-primary btn-sm" id="addTagBtn">Add</button>
         </div>
-
-        <div class="divider"></div>
-
-        <div class="d-flex gap-2 mt-3">
-          <input type="text" id="newTagName" class="form-control form-control-sm" placeholder="Tag name">
-          <input type="color" id="newTagColor" value="#00ff99"
-                 style="width:40px; height:32px; padding:1px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; cursor:pointer;">
-          <button class="btn btn-sm btn-primary" onclick="createTag()">
-            <i class="fa fa-plus"></i>
-          </button>
-        </div>
-        <div id="tagError" class="text-red mt-2" style="font-size:11px; display:none;"></div>
+        <div id="tagList"></div>
       </div>
     </div>
   </div>
@@ -161,52 +61,164 @@
 
 {% block scripts %}
 <script>
-function applySort(val) {
-  document.getElementById('sortHidden').value = val;
-  document.getElementById('searchForm').submit();
-}
+/* Profiles live in this browser (IndexedDB). Searching, sorting and tag
+   filtering all happen here — there is no server-side list to query. */
+(function () {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
-async function createTag() {
-  const name = document.getElementById('newTagName').value.trim();
-  const color = document.getElementById('newTagColor').value;
-  if (!name) return;
+  const state = { q: '', sort: 'date', tag: null };
+  // Object URLs for photos must be released or they leak for the page's life.
+  let photoUrls = [];
 
-  const res = await fetch('/profiles/tags', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name, color})
+  function releasePhotos() {
+    photoUrls.forEach((u) => URL.revokeObjectURL(u));
+    photoUrls = [];
+  }
+
+  async function card(p, tagsById) {
+    let photo = '<div class="profile-card-photo-placeholder"><i class="fa fa-user"></i></div>';
+    if (p.photo_id) {
+      const url = await Data.photoUrl(p.photo_id);
+      if (url) {
+        photoUrls.push(url);
+        photo = '<img src="' + url + '" class="profile-card-photo" alt="">';
+      }
+    }
+
+    const radar = p.radar || {};
+    const scores = radar.scores || [];
+    const threat = scores[4] || 0;
+    const threatLabel = (radar.labels || [])[4] || 'Threat';
+
+    const pills = (p.tag_ids || []).map((id) => tagsById[id]).filter(Boolean)
+      .map((t) => '<span class="tag-chip" style="border-color:' + esc(t.color) +
+        ';color:' + esc(t.color) + '">' + esc(t.name) + '</span>').join('');
+
+    return '<a href="/profiles/' + p.id + '" class="profile-card">' + photo +
+      '<div class="profile-card-info">' +
+      '<div class="profile-card-codename">' + esc(p.codename) + '</div>' +
+      (p.real_name ? '<div class="profile-card-realname">' + esc(p.real_name) + '</div>' : '') +
+      '<div class="d-flex align-items-center gap-2 mt-2">' +
+        '<span style="font-size:10px;color:var(--text-faint)">' +
+        esc(String(threatLabel).toUpperCase()) + '</span>' +
+        '<div class="threat-bar"><span style="width:' + Math.max(0, Math.min(100, threat)) +
+        '%"></span></div>' +
+        '<span style="font-size:11px;font-family:var(--font-mono);color:var(--text-dim)">' +
+        threat + '</span>' +
+      '</div>' +
+      (pills ? '<div class="d-flex gap-1 flex-wrap mt-2">' + pills + '</div>' : '') +
+      '</div></a>';
+  }
+
+  async function render() {
+    releasePhotos();
+    const [profiles, tags] = await Promise.all([Data.profiles(), Data.tags()]);
+    const tagsById = Object.fromEntries(tags.map((t) => [t.id, t]));
+
+    $('#profileCount').textContent = profiles.length +
+      ' subject' + (profiles.length === 1 ? '' : 's') + ' in this browser';
+
+    $('#tagPills').innerHTML =
+      '<button class="dork-pill' + (state.tag ? '' : ' active') + '" data-tag="">All</button>' +
+      tags.map((t) => '<button class="dork-pill' +
+        (state.tag === t.id ? ' active' : '') + '" data-tag="' + t.id + '"' +
+        (state.tag === t.id ? ' style="border-color:' + esc(t.color) + ';color:' + esc(t.color) + '"' : '') +
+        '>' + esc(t.name) + '</button>').join('');
+
+    let rows = profiles;
+    if (state.q) {
+      const needle = state.q.toLowerCase();
+      rows = rows.filter((p) =>
+        (p.codename + ' ' + (p.real_name || '') + ' ' +
+         (p.known_aliases || []).join(' ')).toLowerCase().includes(needle));
+    }
+    if (state.tag) rows = rows.filter((p) => (p.tag_ids || []).includes(state.tag));
+
+    const threatOf = (p) => ((p.radar || {}).scores || [])[4] || 0;
+    rows.sort({
+      name: (a, b) => String(a.codename).localeCompare(String(b.codename)),
+      threat: (a, b) => threatOf(b) - threatOf(a),
+      date: (a, b) => String(b.created_at).localeCompare(String(a.created_at)),
+    }[state.sort]);
+
+    const host = $('#profileList');
+    if (!rows.length) {
+      host.innerHTML = '<div class="mon-empty">' +
+        (profiles.length
+          ? 'No profiles match this view.'
+          : '<i class="fa fa-id-card fa-2x mb-3 d-block" style="opacity:.3"></i>' +
+            '<p class="mb-1">No profiles yet.</p>' +
+            '<p style="font-size:12px">A profile is a dossier on one subject: ' +
+            'identity, aliases, social accounts and intel notes.</p>' +
+            '<a class="btn btn-primary btn-sm mt-2" href="/profiles/new">' +
+            'Create the first profile</a>') + '</div>';
+      return;
+    }
+    host.innerHTML = '<div class="profile-grid">' +
+      (await Promise.all(rows.map((p) => card(p, tagsById)))).join('') + '</div>';
+  }
+
+  async function renderTags() {
+    const tags = await Data.tags();
+    const profiles = await Data.profiles();
+    $('#tagList').innerHTML = tags.length ? tags.map((t) => {
+      const used = profiles.filter((p) => (p.tag_ids || []).includes(t.id)).length;
+      return '<div class="d-flex align-items-center gap-2 mb-2">' +
+        '<span class="tag-chip" style="border-color:' + esc(t.color) + ';color:' +
+        esc(t.color) + '">' + esc(t.name) + '</span>' +
+        '<span style="font-size:11px;color:var(--text-faint)">' + used + ' profile(s)</span>' +
+        '<button class="btn btn-danger btn-xs ms-auto" data-deltag="' + t.id +
+        '"><i class="fa fa-trash"></i></button></div>';
+    }).join('') : '<p class="mon-note mb-0">No tags yet.</p>';
+  }
+
+  $('#q').addEventListener('input', debounce((e) => {
+    state.q = e.target.value.trim();
+    render();
+  }, 200));
+  $('#sortSel').addEventListener('change', (e) => { state.sort = e.target.value; render(); });
+  $('#tagPills').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tag]');
+    if (!b) return;
+    state.tag = b.dataset.tag ? Number(b.dataset.tag) : null;
+    render();
   });
-  const data = await res.json();
 
-  if (!res.ok) {
-    const err = document.getElementById('tagError');
-    err.textContent = data.error;
-    err.style.display = 'block';
-    return;
-  }
+  $('#addTagBtn').addEventListener('click', async () => {
+    const name = $('#newTagName').value.trim();
+    if (!name) return;
+    try {
+      await Data.addTag(name, $('#newTagColor').value);
+      $('#newTagName').value = '';
+      await renderTags();
+      await render();
+      showToast('Tag added', 'success');
+    } catch (e) { showToast(e.message, 'danger'); }
+  });
 
-  const list = document.getElementById('tagList');
-  const row = document.createElement('div');
-  row.className = 'd-flex align-items-center gap-2 mb-2';
-  row.id = `tag-row-${data.id}`;
-  row.innerHTML = `
-    <span class="badge-tag" style="background:${data.color}22; color:${data.color}; border:1px solid ${data.color}44; min-width:80px; text-align:center;">${data.name}</span>
-    <span style="font-size:11px; color:var(--text-faint);">0 profiles</span>
-    <button class="btn btn-xs btn-danger ms-auto" onclick="deleteTag(${data.id})"><i class="fa fa-trash"></i></button>
-  `;
-  list.appendChild(row);
-  document.getElementById('newTagName').value = '';
-  document.getElementById('tagError').style.display = 'none';
-  showToast(`Tag "${data.name}" created`, 'success');
-}
+  $('#tagList').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-deltag]');
+    if (!b) return;
+    if (!await confirmModal('Delete this tag? It is removed from every profile ' +
+        'that carries it.', 'Delete')) return;
+    await Data.deleteTag(Number(b.dataset.deltag));
+    await renderTags();
+    await render();
+    showToast('Tag deleted', 'success');
+  });
 
-async function deleteTag(id) {
-  if (!await confirmModal('Delete this tag? It will be removed from all profiles.')) return;
-  const res = await fetch(`/profiles/tags/${id}`, {method: 'DELETE'});
-  if (res.ok) {
-    document.getElementById(`tag-row-${id}`)?.remove();
-    showToast('Tag deleted', 'info');
-  }
-}
+  document.getElementById('tagModal').addEventListener('show.bs.modal', renderTags);
+  window.addEventListener('pagehide', releasePhotos);
+
+  render().catch((e) => {
+    document.getElementById('profileList').innerHTML =
+      '<div class="mon-empty">Could not read this browser&#39;s storage. ' +
+      esc(e.message) + '</div>';
+  });
+})();
 </script>
 {% endblock %}

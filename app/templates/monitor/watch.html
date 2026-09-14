@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ w.name }} — Signal Monitor{% endblock %}
+{% block title %}Signal Monitor{% endblock %}
 
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/monitor.css') }}">
@@ -9,18 +9,13 @@
 <div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
   <div style="min-width:0">
     <a href="{{ url_for('monitor.list_watches') }}" style="font-size:12px"><i class="fa fa-arrow-left me-1"></i>All watches</a>
-    <h1 class="page-title mt-1 mb-1">{{ w.name }}</h1>
-    <div class="d-flex gap-2 align-items-center flex-wrap">
-      {% if w.mode_release %}<span class="mon-mode-chip release"><i class="fa fa-bullhorn"></i> Media Release Threat</span>{% endif %}
-      {% if w.mode_hunter %}<span class="mon-mode-chip hunter"><i class="fa fa-crosshairs"></i> Digital Hunter</span>{% endif %}
-      {% if not w.mode_release and not w.mode_hunter %}<span class="mon-mode-chip std">Standard</span>{% endif %}
-      {% if w.subject %}<span class="page-sub mb-0" style="font-size:12px">Subject: {{ w.subject }}</span>{% endif %}
-    </div>
+    <h1 class="page-title mt-1 mb-1" id="watchName">…</h1>
+    <div class="d-flex gap-2 align-items-center flex-wrap" id="watchChips"></div>
   </div>
   <div class="d-flex gap-2 flex-wrap">
     <button class="btn btn-outline btn-sm" id="btnSandbox"><i class="fa fa-flask me-1"></i> Test scoring</button>
-    <a class="btn btn-outline btn-sm" href="{{ url_for('monitor.export_csv', watch_id=w.id) }}"><i class="fa fa-file-csv me-1"></i> CSV</a>
-    <a class="btn btn-outline btn-sm" href="{{ url_for('monitor.export_json', watch_id=w.id) }}"><i class="fa fa-file-code me-1"></i> JSON</a>
+    <button class="btn btn-outline btn-sm" id="btnCsv"><i class="fa fa-file-csv me-1"></i> CSV</button>
+    <button class="btn btn-outline btn-sm" id="btnJson"><i class="fa fa-file-code me-1"></i> JSON</button>
     <button class="btn btn-danger btn-sm" id="btnDeleteWatch"><i class="fa fa-trash"></i></button>
   </div>
 </div>
@@ -33,15 +28,15 @@
     <div class="card">
       <div class="card-header-bar"><span class="card-title">Trigger modes</span></div>
       <div class="p-2 d-grid gap-2">
-        <label class="mon-toggle release {% if w.mode_release %}on{% endif %}" id="tog-release">
-          <input type="checkbox" id="m-release" {% if w.mode_release %}checked{% endif %}>
+        <label class="mon-toggle release" id="tog-release">
+          <input type="checkbox" id="m-release">
           <div>
             <div class="t"><i class="fa fa-bullhorn me-1"></i> Media Release Threat</div>
             <div class="s">Scores posts against an official release: impersonation, contradictions, account compromise.</div>
           </div>
         </label>
-        <label class="mon-toggle hunter {% if w.mode_hunter %}on{% endif %}" id="tog-hunter">
-          <input type="checkbox" id="m-hunter" {% if w.mode_hunter %}checked{% endif %}>
+        <label class="mon-toggle hunter" id="tog-hunter">
+          <input type="checkbox" id="m-hunter">
           <div>
             <div class="t"><i class="fa fa-crosshairs me-1"></i> Digital Hunter</div>
             <div class="s">Correlates authors against stored profiles. Adds doxxing and threat-language rules.</div>
@@ -56,48 +51,76 @@
       <div class="p-2 d-grid gap-2">
         <div>
           <label class="form-label">Subject</label>
-          <input class="form-control form-control-sm" id="f-subject" value="{{ w.subject or '' }}">
+          <input class="form-control form-control-sm" id="f-subject">
         </div>
-        <div>
-          <label class="form-label">Keywords</label>
-          <input class="form-control form-control-sm" id="f-keywords" value="{{ w.keywords or '' }}">
-          <div class="form-text">
-            Comma separated. A post must mention at least one <b>specific</b> term
-            to count as on-topic — generic words like "election" only broaden the
-            search. Prefix a term with <span class="mon-kbd">+</span> to force it
-            to be required.
+        <div class="mon-kw" id="kwEditor">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <label class="form-label mb-0">Keywords</label>
+            <div class="mon-kw-mode" title="How the required terms combine">
+              <button type="button" data-mode="all">ALL</button>
+              <button type="button" data-mode="any">ANY</button>
+            </div>
+          </div>
+
+          <div class="mon-kw-group" data-bucket="required">
+            <div class="h"><i class="fa fa-anchor"></i> Required
+              <small id="kwReqHint">must appear</small></div>
+            <div class="chips" id="kwReq"></div>
+            <input class="form-control form-control-sm" id="kwReqInput"
+                   placeholder="Add a term, then Enter">
+          </div>
+
+          <div class="mon-kw-group" data-bucket="optional">
+            <div class="h"><i class="fa fa-plus"></i> Optional
+              <small>broadens, never enough on its own</small></div>
+            <div class="chips" id="kwOpt"></div>
+            <input class="form-control form-control-sm" id="kwOptInput"
+                   placeholder="Add a term, then Enter">
+          </div>
+
+          <div class="mon-kw-group excl" data-bucket="excluded">
+            <div class="h"><i class="fa fa-ban"></i> Excluded
+              <small>rejects the post outright</small></div>
+            <div class="chips" id="kwExc"></div>
+            <input class="form-control form-control-sm" id="kwExcInput"
+                   placeholder="Add a term, then Enter">
+          </div>
+
+          <div class="form-text mt-1">
+            <span class="mon-kbd">word</span>,
+            <span class="mon-kbd">"exact phrase"</span>,
+            <span class="mon-kbd">a|b|c</span> (any of),
+            <span class="mon-kbd">/regex/</span>
           </div>
           <div id="topicPreview" class="mon-note mt-1"></div>
         </div>
+
         <div>
           <label class="form-label">Linked profile</label>
           <select class="form-select form-select-sm" id="f-profile">
             <option value="">— none —</option>
-            {% for p in profiles %}
-            <option value="{{ p.id }}" {% if w.profile_id == p.id %}selected{% endif %}>{{ p.codename }}</option>
-            {% endfor %}
           </select>
         </div>
       </div>
     </div>
 
     <!-- Release mode fields -->
-    <div class="card" id="release-panel" {% if not w.mode_release %}style="display:none"{% endif %}>
+    <div class="card" id="release-panel" style="display:none">
       <div class="card-header-bar"><span class="card-title"><i class="fa fa-bullhorn me-1"></i> Official release</span></div>
       <div class="p-2 d-grid gap-2">
         <div>
           <label class="form-label">Release text</label>
-          <textarea class="form-control form-control-sm" id="f-reference" rows="6">{{ w.reference_text or '' }}</textarea>
+          <textarea class="form-control form-control-sm" id="f-reference" rows="6"></textarea>
           <div class="form-text">Posts are compared against this.</div>
         </div>
         <div>
           <label class="form-label">Official accounts</label>
-          <textarea class="form-control form-control-sm" id="f-accounts" rows="3" placeholder="Facebook apc.cybersecurity&#10;X @APC_Cyber">{{ w.official_accounts or '' }}</textarea>
+          <textarea class="form-control form-control-sm" id="f-accounts" rows="3" placeholder="Facebook apc.cybersecurity&#10;X @APC_Cyber"></textarea>
           <div class="form-text">One per line: platform, then handle.</div>
         </div>
         <div>
           <label class="form-label">Official domains</label>
-          <input class="form-control form-control-sm" id="f-domains" value="{{ w.official_domains or '' }}" placeholder="apc.edu.ph">
+          <input class="form-control form-control-sm" id="f-domains" placeholder="apc.edu.ph">
         </div>
       </div>
     </div>
@@ -111,7 +134,7 @@
       <div class="p-2 d-grid gap-2">
         <div>
           <label class="form-label">Custom flag keywords</label>
-          <textarea class="form-control form-control-sm" id="f-flags" rows="5" placeholder="voucher scam = 20&#10;/free\s+load/ = 15 | telco bait&#10;tuition refund">{{ w.custom_flags or '' }}</textarea>
+          <textarea class="form-control form-control-sm" id="f-flags" rows="5" placeholder="voucher scam = 20&#10;/free\s+load/ = 15 | telco bait&#10;tuition refund"></textarea>
           <div class="form-text">
             One rule per line. <span class="mon-kbd">word</span>,
             <span class="mon-kbd">word = 15</span>,
@@ -122,11 +145,11 @@
         <div class="row g-2">
           <div class="col-6">
             <label class="form-label">Review at</label>
-            <input type="number" min="0" max="100" class="form-control form-control-sm" id="f-t-review" value="{{ w.threshold_review }}">
+            <input type="number" min="0" max="100" class="form-control form-control-sm" id="f-t-review" value="30">
           </div>
           <div class="col-6">
             <label class="form-label">High risk at</label>
-            <input type="number" min="0" max="100" class="form-control form-control-sm" id="f-t-high" value="{{ w.threshold_high }}">
+            <input type="number" min="0" max="100" class="form-control form-control-sm" id="f-t-high" value="60">
           </div>
         </div>
         <details>
@@ -134,7 +157,7 @@
           <div class="mon-weights mt-2" id="weightGrid">
             {% for key, val in default_weights.items() %}
             <span data-wlabel="{{ key }}">{{ key.replace('_',' ') }}</span>
-            <input type="number" data-weight="{{ key }}" data-default="{{ val }}" value="{{ weights[key] }}">
+            <input type="number" data-weight="{{ key }}" data-default="{{ val }}" value="{{ val }}">
             {% endfor %}
           </div>
         </details>
@@ -181,20 +204,78 @@
             <label class="form-label">Per source</label>
             <input type="number" class="form-control form-control-sm" id="c-limit" value="25" min="1" max="100">
           </div>
+          <div style="width:130px">
+            <label class="form-label">Only fetch</label>
+            <select class="form-select form-select-sm" id="c-days">
+              <option value="">Any date</option>
+              <option value="1">Last 24 h</option>
+              <option value="7" selected>Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+          </div>
           <button class="btn btn-primary btn-sm" id="btnCollect"><i class="fa fa-satellite-dish me-1"></i> Collect now</button>
         </div>
 
-        <div class="mon-src" id="srcGrid">
-          {% for s in sources %}
-          <div class="mon-src-item {% if s.key in ('google_news','reddit') %}on{% endif %}" data-src="{{ s.key }}" data-needsurl="{{ 1 if s.get('needs_url') else 0 }}">
-            <div class="n"><span class="dot {% if not s.live %}manual{% endif %}"></span>{{ s.name }}</div>
-            <div class="d">{{ s.desc }}</div>
+        <!-- Which sources to pull from. The full list is long, so it opens
+             as a summary that names the current selection and expands on
+             demand -- the picker used to be a wall of tiles that pushed the
+             controls below the fold. -->
+        <div class="mon-src-picker" id="srcPicker">
+          <button type="button" class="mon-src-summary" id="srcToggle"
+                  aria-expanded="false" aria-controls="srcBody">
+            <i class="fa fa-chevron-right caret"></i>
+            <span class="lbl">Sources</span>
+            <span class="count" id="srcCount">2 selected</span>
+            <span class="names" id="srcNames"></span>
+            <span class="hint">click to choose</span>
+          </button>
+
+          <div class="mon-src-body" id="srcBody" hidden>
+            <div class="mon-src-quick">
+              <button type="button" class="btn btn-ghost btn-xs" data-preset="news">News</button>
+              <button type="button" class="btn btn-ghost btn-xs" data-preset="social">Social</button>
+              <button type="button" class="btn btn-ghost btn-xs" data-preset="open">Everything open</button>
+              <button type="button" class="btn btn-ghost btn-xs ms-auto" data-preset="none">Clear</button>
+            </div>
+
+            {% for group, items in sources|groupby('group') %}
+            <div class="mon-src-group">
+              <div class="mon-src-head">{{ group }}
+                <button type="button" class="btn btn-ghost btn-xs" data-group-all="{{ group }}">all</button>
+                <button type="button" class="btn btn-ghost btn-xs" data-group-none="{{ group }}">none</button>
+              </div>
+              <div class="mon-src">
+                {% for s in items %}
+                <div class="mon-src-item {% if s.key in ('google_news','reddit') %}on{% endif %}{% if not s.available %} unavailable{% endif %}"
+                     data-src="{{ s.key }}"
+                     data-name="{{ s.name }}"
+                     data-live="{{ 1 if s.live else 0 }}"
+                     data-group="{{ group }}"
+                     data-needsurl="{{ 1 if s.get('needs_url') else 0 }}"
+                     data-available="{{ 1 if s.available else 0 }}"
+                     role="checkbox" tabindex="0"
+                     aria-checked="{{ 'true' if s.key in ('google_news','reddit') else 'false' }}"
+                     {% if not s.available %}title="{{ s.cap_label }}: {{ s.cap_reason }}{% if s.cap_needs %} — needs {{ s.cap_needs }}{% endif %}"{% endif %}>
+                  <div class="n"><span class="dot {% if not s.live %}manual{% endif %}"></span>{{ s.name }}
+                    {% if not s.available %}<i class="fa fa-lock ms-1" style="font-size:9px;opacity:.6"></i>{% endif %}
+                  </div>
+                  <div class="d">{{ s.desc }}</div>
+                  {% if not s.available %}<div class="d cap">{{ s.cap_reason }}</div>{% endif %}
+                  {% if s.cap_caveat %}<div class="d cap warn">{{ s.cap_caveat }}</div>{% endif %}
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+            {% endfor %}
+
+            <div class="form-text mt-2">
+              <span style="color:var(--green)">●</span> fetches live &nbsp;
+              <span style="color:var(--yellow)">●</span> login-walled — opens the search for manual collection &nbsp;
+              <i class="fa fa-lock" style="font-size:9px"></i> needs an optional library —
+              <a href="#" id="btnCaps">see what is installed</a>
+            </div>
           </div>
-          {% endfor %}
-        </div>
-        <div class="form-text mt-2">
-          <span style="color:var(--green)">●</span> fetches live &nbsp;
-          <span style="color:var(--yellow)">●</span> login-walled — opens the search for manual collection
         </div>
 
         <div id="urlFields" class="mt-2" style="display:none">
@@ -232,8 +313,7 @@
     </div>
 
     <!-- Hunter suggestions -->
-    {% if w.mode_hunter %}
-    <div class="card mb-3" id="hunterPanel">
+    <div class="card mb-3" id="hunterPanel" style="display:none">
       <div class="card-header-bar">
         <span class="card-title"><i class="fa fa-crosshairs me-1"></i> Profile correlation</span>
         <button class="btn btn-ghost btn-xs" id="btnSuggest">Scan for matches</button>
@@ -242,18 +322,44 @@
         <p class="mon-note mb-0">Scan to see which stored profiles these posts point at.</p>
       </div>
     </div>
-    {% endif %}
 
     <!-- Toolbar -->
-    <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
-      <input type="search" class="form-control form-control-sm" id="q" placeholder="Search posts or authors" style="flex:1;min-width:180px">
+    <div class="mon-toolbar mb-2">
+      <input type="search" class="form-control form-control-sm" id="q"
+             placeholder="Search posts, authors, threat types" style="flex:2;min-width:170px">
+      <select class="form-select form-select-sm" id="platformSel" style="width:auto">
+        <option value="">All platforms</option>
+      </select>
+      <select class="form-select form-select-sm" id="statusSel" style="width:auto">
+        <option value="">Any status</option>
+        {% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+      </select>
+      <select class="form-select form-select-sm" id="daysSel" style="width:auto">
+        <option value="">Any date</option>
+        <option value="1">Last 24 h</option>
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
       <select class="form-select form-select-sm" id="sortSel" style="width:auto">
-        <option value="risk">Highest risk first</option>
+        <option value="risk">Highest risk</option>
         <option value="recent">Newest first</option>
+        <option value="oldest">Oldest first</option>
+        <option value="relevance">Most relevant</option>
         <option value="platform">By platform</option>
         <option value="status">By status</option>
       </select>
-      <button class="btn btn-outline btn-sm" id="btnLinkmap"><i class="fa fa-diagram-project me-1"></i> To link map</button>
+      <select class="form-select form-select-sm" id="perPageSel" style="width:auto"
+              title="Posts per page">
+        <option value="10">10</option>
+        <option value="25" selected>25</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+      </select>
+      <button class="btn btn-ghost btn-sm" id="btnResetFilters" title="Clear all filters">
+        <i class="fa fa-filter-circle-xmark"></i></button>
+      <button class="btn btn-outline btn-sm" id="btnLinkmap">
+        <i class="fa fa-diagram-project me-1"></i> Link map</button>
     </div>
 
     <div id="bulkBar" class="mon-triage mb-3" style="display:none">
@@ -264,14 +370,17 @@
       </select>
       <select class="form-select form-select-sm" id="bulkProfile" style="width:auto">
         <option value="">Link to profile…</option>
-        {% for p in profiles %}<option value="{{ p.id }}">{{ p.codename }}</option>{% endfor %}
       </select>
       <button class="btn btn-ghost btn-xs" id="bulkClear">Clear overrides</button>
       <button class="btn btn-danger btn-xs" id="bulkDelete">Delete</button>
+      <button class="btn btn-ghost btn-xs" id="bulkSelectPage">Select page</button>
       <button class="btn btn-ghost btn-xs ms-auto" id="bulkDeselect">Deselect all</button>
     </div>
 
+    <div id="resultMeta" class="mon-note mb-2"></div>
     <div id="list"></div>
+    <nav id="pager" class="mon-pager" aria-label="Post pages"></nav>
+
   </div>
 </div>
 
@@ -394,18 +503,50 @@
   </div>
 </div>
 
-<script id="bootstrapData" type="application/json">
-{{ {'watchId': w.id, 'statuses': statuses|list, 'profiles': profiles|map(attribute='id')|list} | tojson }}
-</script>
+<!-- Link map builder -->
+<div class="modal fade" id="linkmapModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title"><i class="fa fa-diagram-project me-2"></i>Build link map</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="lmBody"></div>
+      <div class="modal-footer" style="border-color:var(--border)">
+        <button class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="lm-build">
+          <i class="fa fa-diagram-project me-1"></i> Build map</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Capabilities modal -->
+<div class="modal fade" id="capsModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title"><i class="fa fa-puzzle-piece me-2"></i>Collection capabilities</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="capsBody">
+        <p class="mon-note">Loading…</p>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
+// The watch id comes from the URL; everything about it is read from
+// IndexedDB by monitor.js. The server rendered only the chrome.
 window.MONITOR = {
-  watchId: {{ w.id }},
-  profiles: [{% for p in profiles %}{id:{{ p.id }},codename:{{ p.codename|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+  watchId: Number(new URLSearchParams(location.search).get('id')) || 0,
   statuses: {{ statuses|list|tojson }},
-  defaultWeights: {{ default_weights|tojson }}
+  defaultWeights: {{ default_weights|tojson }},
+  pageSize: {{ page_size }}
 };
 </script>
 <script src="{{ url_for('static', filename='js/monitor.js') }}"></script>

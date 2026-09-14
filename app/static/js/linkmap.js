@@ -26,10 +26,12 @@
   ];
 
   // ── Initial data ──────────────────────────────────────────────────────────
+  // The graph is read from IndexedDB after the network is constructed; the
+  // inline JSON is only a placeholder so vis has something to mount on.
   let initialData = { nodes: [], edges: [] };
   const rawEl = document.getElementById('graphDataRaw');
   if (rawEl) {
-    try { initialData = JSON.parse(rawEl.textContent); } catch (e) {}
+    try { initialData = JSON.parse(rawEl.textContent); } catch (e) { /* placeholder */ }
   }
 
   const nodesDS = new vis.DataSet(initialData.nodes.map(n => enrichNode(n)));
@@ -301,68 +303,72 @@
   };
 
   // ── Save ──────────────────────────────────────────────────────────────────
+  // Maps live in this browser, so saving is a store write. There is no server
+  // round-trip and no id to reconcile.
   window.saveGraph = async function () {
     const title     = document.getElementById('graphTitle')?.value.trim() || 'Untitled Map';
     const profileId = document.getElementById('graphProfileId')?.value || null;
     const graphId   = document.getElementById('graphId')?.value || null;
 
-    const nodes = nodesDS.get();
-    const edges = edgesDS.get();
-    const graph_json = JSON.stringify({ nodes, edges });
-
+    const graph_json = JSON.stringify({ nodes: nodesDS.get(), edges: edgesDS.get() });
     const saveBtn = document.getElementById('saveGraphBtn');
     saveBtn.disabled = true;
     saveBtn.innerHTML = '<span class="spinner"></span>';
 
-    const res = await fetch('/linkmap/save', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ id: graphId ? parseInt(graphId) : null, title, graph_json, profile_id: profileId })
-    });
+    try {
+      const row = graphId ? (await Store.get('graphs', parseInt(graphId, 10))) || {} : {};
+      Object.assign(row, {
+        title, graph_json,
+        profile_id: profileId ? parseInt(profileId, 10) : null,
+        created_at: row.created_at || new Date().toISOString().slice(0, 19),
+        updated_at: new Date().toISOString().slice(0, 19),
+      });
+      const id = await Store.put('graphs', row);
 
-    const data = await res.json();
-    saveBtn.disabled = false;
-    saveBtn.innerHTML = '<i class="fa fa-save"></i> Save';
-
-    if (data.ok) {
       if (!graphId) {
-        history.replaceState(null, '', `/linkmap/${data.id}`);
-        document.getElementById('graphId').value = data.id;
+        history.replaceState(null, '', '/linkmap/edit?id=' + id);
+        document.getElementById('graphId').value = id;
       }
       markClean();
       saveBtn.innerHTML = '<i class="fa fa-check"></i> Saved';
-      setTimeout(() => saveBtn.innerHTML = '<i class="fa fa-save"></i> Save', 2000);
-      showToast('Map saved', 'success');
-    } else {
-      showToast('Save failed', 'danger');
+      setTimeout(() => { saveBtn.innerHTML = '<i class="fa fa-save"></i> Save'; }, 2000);
+      showToast('Map saved in this browser', 'success');
+    } catch (e) {
+      saveBtn.innerHTML = '<i class="fa fa-save"></i> Save';
+      showToast('Save failed: ' + e.message, 'danger');
+    } finally {
+      saveBtn.disabled = false;
     }
   };
 
   // ── Export PNG ────────────────────────────────────────────────────────────
+  // The canvas is already in the browser, so the image never needs a server.
   window.exportPNG = async function () {
-    const graphId = document.getElementById('graphId')?.value;
-    if (!graphId) { alert('Save the map first before exporting.'); return; }
-
+    const title = document.getElementById('graphTitle')?.value.trim() || 'linkmap';
     const canvas = container.querySelector('canvas');
-    if (!canvas) { alert('Canvas not found.'); return; }
+    if (!canvas) { showToast('Nothing to export yet', 'warning'); return; }
 
-    const dataUrl = canvas.toDataURL('image/png');
+    // Composite onto an opaque background: the network canvas is transparent,
+    // which reads as black-on-black in most image viewers.
+    const out = document.createElement('canvas');
+    out.width = canvas.width;
+    out.height = canvas.height;
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#07070d';
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(canvas, 0, 0);
 
-    const res = await fetch(`/linkmap/${graphId}/export`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ data_url: dataUrl })
-    });
-
-    if (res.ok) {
-      const blob = await res.blob();
+    out.toBlob((blob) => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `linkmap_${graphId}.png`;
+      a.download = title.replace(/[^\w.-]+/g, '_') + '.png';
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
-    }
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast('Exported PNG', 'success');
+    }, 'image/png');
   };
 
   // ── Zoom / layout controls ────────────────────────────────────────────────
@@ -393,4 +399,56 @@
     if (!str) return '';
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
+
+  // ── Load from browser storage ─────────────────────────────────────────────
+  (async function boot() {
+    if (typeof Store === 'undefined') return;
+
+    // Profile options come from the store too.
+    const sel = document.getElementById('graphProfileId');
+    const profiles = await Store.all('profiles');
+    if (sel) {
+      sel.innerHTML = '<option value="">— No profile —</option>' +
+        profiles.map((p) => '<option value="' + p.id + '">' +
+          escHtml(p.codename) + '</option>').join('');
+    }
+
+    const id = Number(new URLSearchParams(location.search).get('id')) || null;
+    if (!id) { updateCountBadge(); return; }
+
+    const row = await Store.get('graphs', id);
+    if (!row) {
+      // A toast disappears; someone arriving on a stale link needs the reason
+      // to still be on screen while they decide what to do.
+      showToast('That map is not in this browser', 'warning');
+      const title = document.getElementById('graphTitle');
+      if (title) { title.value = 'Map not found'; title.disabled = true; }
+      container.innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:center;' +
+        'height:100%;padding:30px"><div style="text-align:center;max-width:380px">' +
+        '<i class="fa fa-diagram-project fa-2x" style="opacity:.3"></i>' +
+        '<p style="margin:14px 0 6px;color:var(--text)">That map is not in ' +
+        'this browser.</p><p style="font-size:12px;color:var(--text-dim)">It may ' +
+        'have been created in another browser or profile, or the site data was ' +
+        'cleared.</p><a class="btn btn-primary btn-sm" href="/linkmap/">' +
+        'All maps</a></div></div>';
+      updateCountBadge();
+      return;
+    }
+
+    document.getElementById('graphId').value = row.id;
+    document.getElementById('graphTitle').value = row.title || 'Untitled Map';
+    if (sel) sel.value = row.profile_id || '';
+    document.title = (row.title || 'Map') + ' — Link Mapper';
+
+    let data = { nodes: [], edges: [] };
+    try { data = JSON.parse(row.graph_json || '{}'); } catch (e) { /* corrupt */ }
+    nodesDS.clear();
+    edgesDS.clear();
+    nodesDS.add((data.nodes || []).map((n) => enrichNode(n)));
+    edgesDS.add((data.edges || []).map((e) => enrichEdge(e)));
+    markClean();
+    updateCountBadge();
+    setTimeout(() => network.fit({ animation: false }), 120);
+  })();
 })();

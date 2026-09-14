@@ -17,8 +17,17 @@
 
   // ── Load templates on page load ──────────────────────────────────────────
   async function loadTemplates() {
+    // Built-in templates are reference data and come from the server; the
+    // analyst's own templates live in this browser and are merged in here.
     const res = await fetch('/dorks/templates');
     allTemplates = await res.json();
+    try {
+      (await Data.customDorks()).forEach((t) => {
+        const cat = t.category || 'Custom';
+        allTemplates[cat] = allTemplates[cat] || [];
+        allTemplates[cat].push(Object.assign({ is_builtin: false }, t));
+      });
+    } catch (e) { /* an empty store is not an error */ }
     renderCategories();
     renderTemplateList(activeCategory);
   }
@@ -150,33 +159,40 @@
   }
 
   // ── Run / Search ──────────────────────────────────────────────────────────
+  // The server builds the URL; this tab opens it. The previous version called
+  // webbrowser.open() on the *server*, which opens a browser on the machine
+  // running Flask -- fine on a laptop, useless on anything remote.
   if (runBtn) {
     runBtn.addEventListener('click', async () => {
       const query = getFinalQuery();
       if (!query || query.includes('{')) {
-        alert('Fill in all variables before searching.');
+        showToast('Fill in every variable before searching.', 'warning');
         return;
       }
 
       const profileId = document.getElementById('dorkProfileSelect')?.value || null;
       runBtn.disabled = true;
-      runBtn.innerHTML = '<span class="spinner"></span> Searching…';
+      runBtn.innerHTML = '<span class="spinner"></span> Opening…';
 
-      await fetch('/dorks/search', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          query,
-          template_id: currentTemplate?.id || null,
-          profile_id: profileId || null,
-        })
-      });
+      try {
+        const res = await fetch('/dorks/build', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not build that query');
 
-      runBtn.disabled = false;
-      runBtn.innerHTML = '<i class="fa fa-search"></i> Search Google';
-
-      // Refresh history
-      loadHistory();
+        await Data.recordDork(query, currentTemplate?.id || null,
+                              profileId ? Number(profileId) : null);
+        window.open(data.url, '_blank', 'noopener');
+        loadHistory();
+      } catch (e) {
+        showToast(e.message, 'danger');
+      } finally {
+        runBtn.disabled = false;
+        runBtn.innerHTML = '<i class="fa fa-search"></i> Search Google';
+      }
     });
   }
 
@@ -187,13 +203,11 @@
       if (!query) return;
       const label = prompt('Label for this favorite (optional):', currentTemplate?.name || '');
       if (label === null) return;
-
-      await fetch('/dorks/favorites', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({query, label})
-      });
-      loadFavorites();
+      try {
+        await Data.saveDorkFavorite(query, label);
+        loadFavorites();
+        showToast('Saved to favorites', 'success');
+      } catch (e) { showToast(e.message, 'danger'); }
     });
   }
 
@@ -203,9 +217,10 @@
   }
 
   // ── History ───────────────────────────────────────────────────────────────
+  // History, favourites and custom templates are the analyst's own records, so
+  // they live in this browser rather than on the server.
   async function loadHistory() {
-    const res = await fetch('/dorks/history');
-    const items = await res.json();
+    const items = await Data.dorkHistory(25);
     const container = document.getElementById('dorkHistory');
     if (!container) return;
 
@@ -214,10 +229,10 @@
       return;
     }
 
-    container.innerHTML = items.map(h => `
-      <div class="history-item" onclick="useHistoryQuery(${JSON.stringify(escHtml(h.query))})">
+    container.innerHTML = items.map((h) => `
+      <div class="history-item" data-use="${escHtml(h.query)}">
         <span class="history-query">${escHtml(h.query)}</span>
-        <span class="history-time">${h.used_at}</span>
+        <span class="history-time">${escHtml((h.used_at || '').replace('T', ' ').slice(0, 16))}</span>
       </div>
     `).join('');
   }
@@ -231,8 +246,7 @@
 
   // ── Favorites loader ──────────────────────────────────────────────────────
   async function loadFavorites() {
-    const res = await fetch('/dorks/favorites');
-    const items = await res.json();
+    const items = await Data.dorkFavorites();
     const container = document.getElementById('dorkFavorites');
     if (!container) return;
 
@@ -241,18 +255,26 @@
       return;
     }
 
-    container.innerHTML = items.map(f => `
+    container.innerHTML = items.map((f) => `
       <div class="history-item">
-        <span class="history-query" onclick="useHistoryQuery(${JSON.stringify(escHtml(f.query))})">${escHtml(f.label || f.query)}</span>
-        <button class="btn btn-xs btn-danger" onclick="deleteFav(${f.id})"><i class="fa fa-trash"></i></button>
+        <span class="history-query" data-use="${escHtml(f.query)}">${escHtml(f.label || f.query)}</span>
+        <button class="btn btn-xs btn-danger" data-delfav="${f.id}"><i class="fa fa-trash"></i></button>
       </div>
     `).join('');
   }
 
-  window.deleteFav = async function (id) {
-    await fetch(`/dorks/favorites/${id}`, {method: 'DELETE'});
-    loadFavorites();
-  };
+  // One delegated listener rather than inline onclick handlers, so a query
+  // containing quotes cannot break out of an attribute.
+  document.addEventListener('click', async (e) => {
+    const use = e.target.closest('[data-use]');
+    if (use) { window.useHistoryQuery(use.dataset.use); return; }
+
+    const del = e.target.closest('[data-delfav]');
+    if (del) {
+      await Data.deleteDorkFavorite(Number(del.dataset.delfav));
+      loadFavorites();
+    }
+  });
 
   // ── Custom template save ──────────────────────────────────────────────────
   window.saveCustomTemplate = async function () {
@@ -261,36 +283,44 @@
     const category = document.getElementById('customTmplCategory')?.value.trim() || 'Custom';
     const description = document.getElementById('customTmplDesc')?.value.trim();
 
-    if (!name || !template) { alert('Name and query are required.'); return; }
-
-    const res = await fetch('/dorks/custom', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name, template, category, description})
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      allTemplates[data.category] = allTemplates[data.category] || [];
-      allTemplates[data.category].push(data);
-      renderTemplateList(activeCategory);
-      document.getElementById('customTmplName').value = '';
-      document.getElementById('customTmplQuery').value = '';
-      document.getElementById('customTmplDesc').value = '';
+    if (!name || !template) {
+      showToast('Name and query are both required.', 'warning');
+      return;
     }
+    try {
+      const saved = await Data.saveCustomDork({ name, template, category, description });
+      saved.is_builtin = false;
+      allTemplates[category] = allTemplates[category] || [];
+      allTemplates[category].push(saved);
+      renderTemplateList(activeCategory);
+      ['customTmplName', 'customTmplQuery', 'customTmplDesc'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      showToast('Template saved', 'success');
+    } catch (e) { showToast(e.message, 'danger'); }
   };
 
   window.deleteCustomTemplate = async function (id, e) {
-    e.stopPropagation();
-    if (!confirm('Delete this custom template?')) return;
-    const res = await fetch(`/dorks/custom/${id}`, {method: 'DELETE'});
-    if (res.ok) {
-      Object.keys(allTemplates).forEach(cat => {
-        allTemplates[cat] = allTemplates[cat].filter(t => t.id !== id);
-      });
-      renderTemplateList(activeCategory);
-    }
+    if (e) e.stopPropagation();
+    if (!await confirmModal('Delete this custom template?', 'Delete')) return;
+    await Data.deleteCustomDork(id);
+    Object.keys(allTemplates).forEach((cat) => {
+      allTemplates[cat] = allTemplates[cat].filter((t) => t.id !== id);
+    });
+    renderTemplateList(activeCategory);
   };
+
+  // Profile picker, filled from the browser store.
+  (async function fillProfiles() {
+    const sel = document.getElementById('dorkProfileSelect');
+    if (!sel) return;
+    try {
+      const profiles = await Data.profiles();
+      sel.innerHTML = '<option value="">— no profile —</option>' +
+        profiles.map((p) => `<option value="${p.id}">${escHtml(p.codename)}</option>`).join('');
+    } catch (e) { /* leave the picker as-is */ }
+  })();
 
   // ── Util ──────────────────────────────────────────────────────────────────
   function escHtml(str) {

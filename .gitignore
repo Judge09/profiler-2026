@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Instance data — the database, the vault salt and uploads are local state,
+# not source. Never commit them: the database can hold collected posts and the
+# salt is part of the credential vault's key derivation.
+instance/
+*.db
+*.db-shm
+*.db-wal
+
+# Uploads
+app/static/uploads/
+
+# Local tooling
+.vercel/
+.pytest_cache/
+.env

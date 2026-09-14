@@ -74,6 +74,9 @@
 
       if (data.type === 'done') {
         finishScan(searchBtn);
+        // Keep the run in this browser so the history survives a reload.
+        Data.saveOsintRun(currentRunId, currentUsername, allResults)
+          .catch(() => { /* history is a convenience, not the result */ });
         return;
       }
 
@@ -181,27 +184,40 @@
   };
 
   // ── Save to profile ───────────────────────────────────────────────────────
+  // Found accounts become social links on a browser-stored profile, which is
+  // also what Digital Hunter matches post authors against.
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
       const profileId = document.getElementById('saveProfileSelect')?.value;
       if (!profileId) { showToast('Select a profile first', 'warning'); return; }
 
       saveBtn.disabled = true;
-      const res = await fetch('/osint/save', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ run_id: currentRunId, profile_id: profileId })
-      });
-      if (res.ok) {
-        const d = await res.json();
-        saveBtn.innerHTML = `<i class="fa fa-check"></i> Saved (${d.updated})`;
-        showToast(`${d.updated} results linked to profile`, 'success');
-      } else {
+      try {
+        const added = await Data.osintToProfile(Number(profileId), allResults);
+        saveBtn.innerHTML = `<i class="fa fa-check"></i> Saved (${added})`;
+        showToast(added
+          ? `${added} account(s) linked to the profile`
+          : 'Those accounts were already on the profile', added ? 'success' : 'info');
+      } catch (e) {
         saveBtn.disabled = false;
-        showToast('Save failed', 'danger');
+        showToast(e.message, 'danger');
       }
     });
   }
+
+  // Profile picker is filled from the browser store.
+  (async function fillProfiles() {
+    const sel = document.getElementById('saveProfileSelect');
+    if (!sel) return;
+    try {
+      const profiles = await Data.profiles();
+      sel.innerHTML = '<option value="">— select a profile —</option>' +
+        profiles.map((p) => `<option value="${p.id}">${escHtml(p.codename)}</option>`).join('');
+      if (!profiles.length) {
+        sel.innerHTML = '<option value="">No profiles in this browser yet</option>';
+      }
+    } catch (e) { /* leave the picker as-is */ }
+  })();
 
   function escHtml(str) {
     if (!str) return '';

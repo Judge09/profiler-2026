@@ -1,0 +1,8 @@
+instance/
+__pycache__/
+*.pyc
+.claude/
+tests/
+*.db
+*.db-shm
+*.db-wal

@@ -25,7 +25,20 @@
   </div>
 </div>
 
+<div id="storageWarn"></div>
 <div id="dash"><div class="mon-empty">Loading dashboard…</div></div>
+<div id="netPanels" class="mon-brief" style="margin-top:14px">
+  <div class="mon-brief-body">
+    <div class="mon-brief-cell wide" id="phishCell">
+      <h6><i class="fa fa-fish-fins me-1"></i> Phishing and risky links</h6>
+      <p class="mon-note mb-0">Checking links against open threat feeds…</p>
+    </div>
+    <div class="mon-brief-cell wide" id="geoCell">
+      <h6><i class="fa fa-earth-americas me-1"></i> Where the infrastructure sits</h6>
+      <p class="mon-note mb-0">Resolving hosts…</p>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -95,16 +108,29 @@
     const days = $('#rangeSel').value;
     let d;
     try {
-      const res = await fetch('/monitor/dashboard/data?days=' + days);
-      d = await res.json();
-      if (!res.ok) throw new Error(d.error || 'Failed');
+      d = await Data.dashboard(days);
     } catch (e) {
       $('#dash').innerHTML = '<div class="mon-empty">Could not load the dashboard.</div>';
       return;
     }
 
     $('#dashMeta').textContent = d.watch_count + ' watch' + (d.watch_count === 1 ? '' : 'es') +
-      ' · ' + d.post_total + ' posts · updated ' + d.generated_at;
+      ' · ' + d.post_total + ' posts · updated ' + d.generated_at +
+      (d.rescored ? ' · rescored ' + d.rescored : '');
+
+    // Data lives in this browser, so its health is the thing worth stating.
+    const u = await Data.storage();
+    const mb = (n) => (n / 1048576).toFixed(1);
+    $('#storageWarn').innerHTML = (u.supported && u.persisted)
+      ? '<div class="mon-storage-bar ok"><i class="fa fa-hard-drive"></i>' +
+        '<span class="txt">Stored in this browser · ' + mb(u.usage) + ' MB of ' +
+        mb(u.quota) + ' MB · protected from automatic cleanup</span></div>'
+      : '<div class="mon-storage-bar"><i class="fa fa-triangle-exclamation"></i>' +
+        '<span class="txt"><b>Data lives only in this browser.</b> ' +
+        (u.supported ? 'It is not protected, so the browser may clear it to free ' +
+          'space. ' : '') +
+        'Clearing site data deletes it, and other devices cannot see it. ' +
+        '<a class="mon-out" href="/monitor/">Export a backup</a>.</span></div>';
 
     const cells = [];
 
@@ -148,6 +174,19 @@
         esc((s.last_note || '').slice(0, 46)) + (s.last_run ? ' · ' + esc(ago(s.last_run)) : ''));
     });
     cells.push('<div class="mon-brief-cell"><h6>Source health</h6>' + health + '</div>');
+
+    // What this deployment can actually run.
+    const cap = d.capabilities || {};
+    if (cap.total) {
+      cells.push('<div class="mon-brief-cell"><h6>Collection capabilities</h6>' +
+        kv('Optional libraries', cap.available + '/' + cap.total,
+           cap.available < cap.total / 2 ? 'up' : 'dim',
+           cap.serverless ? 'serverless — browser sources unavailable' : 'local install') +
+        (cap.missing && cap.missing.length
+          ? '<p class="mon-note mb-0" style="margin-top:6px">Not installed: ' +
+            cap.missing.map(esc).join(', ') + '</p>'
+          : '') + '</div>');
+    }
 
     // The actual work queue.
     if (d.queue.length) {
@@ -197,8 +236,209 @@
       cells.join('') + '</div></div>';
   }
 
+  /* ── Enrichment over stored posts ─────────────────────────────────────
+     Posts live in IndexedDB, so the browser sends the flagged ones up to
+     /api/enrich and the server answers without keeping anything. Results are
+     cached back onto each post, so a second visit costs nothing. */
+
+  async function enrichFlagged(limit) {
+    const posts = (await Store.all('posts'))
+      .filter((p) => Store.effVerdict(p) !== 'ok')
+      .sort((a, b) => Store.effScore(b) - Store.effScore(a))
+      .slice(0, limit);
+    if (!posts.length) return { posts: [], results: [], feeds: {} };
+
+    const need = posts.filter((p) => !p.netintel);
+    let feeds = {};
+    if (need.length) {
+      const res = await fetch('/monitor/api/enrich', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          posts: need.map((p) => ({ id: p.id, text: p.text, url: p.url })),
+          geo: true, phishing: true,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Enrichment failed');
+      feeds = d.feeds || {};
+      d.results.forEach((r, i) => { need[i].netintel = r.findings; });
+      await Store.putMany('posts', need);
+    }
+    return { posts, feeds };
+  }
+
+  async function phishingFromStore(limit) {
+    const { posts, feeds } = await enrichFlagged(limit);
+    const findings = [];
+    const seen = new Set();
+    posts.forEach((p) => {
+      ((p.netintel || {}).phishing || []).forEach((f) => {
+        if (seen.has(f.url)) return;
+        seen.add(f.url);
+        findings.push(Object.assign({}, f, {
+          post_id: p.id, watch_id: p.watch_id,
+          author: p.author, platform: p.platform,
+        }));
+      });
+    });
+    findings.sort((a, b) => b.score - a.score);
+    const counts = { malicious: 0, suspicious: 0 };
+    findings.forEach((f) => { counts[f.verdict] = (counts[f.verdict] || 0) + 1; });
+    return {
+      posts_examined: posts.length, urls_checked: seen.size,
+      counts, findings: findings.slice(0, 40), feeds,
+    };
+  }
+
+  async function geoFromStore(limit) {
+    const { posts } = await enrichFlagged(limit);
+    const countries = {};
+    const flags = [];
+    let hosts = 0;
+    posts.forEach((p) => {
+      const n = p.netintel || {};
+      (n.geo || []).forEach((g) => {
+        hosts += 1;
+        if (!g.country) return;
+        const c = countries[g.country] || (countries[g.country] = {
+          country: g.country, country_code: g.country_code || '',
+          hosts: 0, hosting: 0, proxy: 0, lat: g.lat, lon: g.lon,
+        });
+        c.hosts += 1;
+        if (g.hosting) c.hosting += 1;
+        if (g.proxy) c.proxy += 1;
+      });
+      (n.flags || []).forEach((f) => flags.push({ value: '', detail: f }));
+    });
+    return {
+      posts_examined: posts.length, hosts_checked: hosts,
+      countries: Object.values(countries).sort((a, b) => b.hosts - a.hosts),
+      flags: flags.slice(0, 10),
+      note: 'Locations are where the server answering for a domain sits. ' +
+            'A CDN or cloud host says where the infrastructure is, not where ' +
+            'the author is.',
+    };
+  }
+
+  /* ── Phishing panel ───────────────────────────────────────────────────
+     Loaded after the main dashboard has painted, because checking links
+     against remote feeds is slower than any SQL on this page. */
+  async function loadPhishing() {
+    const cell = $('#phishCell');
+    try {
+      const d = await phishingFromStore(40);
+
+      const feeds = d.feeds || {};
+      const head = '<p class="mon-note">Checked ' + d.urls_checked + ' link(s) across ' +
+        d.posts_examined + ' flagged post(s). ' +
+        (feeds.loaded
+          ? 'Feeds: ' + Object.entries(feeds.sources || {})
+              .map(([k, v]) => esc(k) + ' (' + esc(v) + ')').join(', ')
+          : 'Threat feeds unavailable — heuristics only.') + '</p>';
+
+      if (!d.findings.length) {
+        cell.innerHTML = '<h6><i class="fa fa-fish-fins me-1"></i> Phishing and risky links</h6>' +
+          head + '<p class="mon-note mb-0">No risky links found in the flagged posts.</p>';
+        return;
+      }
+
+      cell.innerHTML = '<h6><i class="fa fa-fish-fins me-1"></i> Phishing and risky links ' +
+        '<span class="mon-tag">' + (d.counts.malicious || 0) + ' malicious</span> ' +
+        '<span class="mon-tag">' + (d.counts.suspicious || 0) + ' suspicious</span></h6>' +
+        head +
+        '<div class="mon-scroll">' + d.findings.map((f) =>
+          '<div class="mon-phish-row ' + f.verdict + '">' +
+          '<span class="sc">' + f.score + '</span>' +
+          '<div class="body">' +
+            '<div class="host">' + esc(f.host || f.url) + '</div>' +
+            '<div class="meta">' + esc(f.platform || '') + ' · ' + esc(f.author || '') +
+            (f.expansion && f.expansion.expanded
+              ? ' · resolves to ' + esc(f.final_url || '').slice(0, 60) : '') +
+            ' · <a class="mon-out" href="/monitor/' + f.watch_id + '#post-' + f.post_id + '">see post</a></div>' +
+            '<ul class="mon-phish-reasons">' +
+              f.reasons.slice(0, 4).map((r) => '<li>' + esc(r.label) + '</li>').join('') +
+            '</ul>' +
+          '</div></div>').join('') + '</div>' +
+        '<p class="mon-note mb-0" style="margin-top:8px">Links are never opened or ' +
+        'fetched — only inspected. Nothing here is clickable on purpose.</p>';
+    } catch (e) {
+      cell.innerHTML = '<h6><i class="fa fa-fish-fins me-1"></i> Phishing and risky links</h6>' +
+        '<p class="mon-note mb-0">Could not run the link check.</p>';
+    }
+  }
+
+  /* ── Geo panel ────────────────────────────────────────────────────────
+     An equirectangular projection is enough to show clustering, and plotting
+     it as plain SVG avoids pulling in a mapping library for one panel. */
+  function worldMap(countries) {
+    const pts = countries.filter((c) => c.lat != null && c.lon != null);
+    if (!pts.length) return '';
+    const W = 720, H = 360;
+    const x = (lon) => (lon + 180) / 360 * W;
+    const y = (lat) => (90 - lat) / 180 * H;
+    const max = Math.max.apply(null, pts.map((c) => c.hosts)) || 1;
+    const dots = pts.map((c) => {
+      const r = 3 + (c.hosts / max) * 9;
+      return '<circle class="dot" cx="' + x(c.lon).toFixed(1) + '" cy="' + y(c.lat).toFixed(1) +
+        '" r="' + r.toFixed(1) + '"><title>' + esc(c.country) + ': ' + c.hosts +
+        ' host(s)' + (c.hosting ? ', ' + c.hosting + ' in datacenters' : '') + '</title></circle>';
+    }).join('');
+    // Graticule only: a real coastline would need an embedded dataset, and the
+    // grid is enough to read position against.
+    let grid = '';
+    for (let lon = -180; lon <= 180; lon += 30) {
+      grid += '<line x1="' + x(lon) + '" y1="0" x2="' + x(lon) + '" y2="' + H +
+        '" stroke="#23233d" stroke-width="0.5"/>';
+    }
+    for (let lat = -60; lat <= 60; lat += 30) {
+      grid += '<line x1="0" y1="' + y(lat) + '" x2="' + W + '" y2="' + y(lat) +
+        '" stroke="#23233d" stroke-width="0.5"/>';
+    }
+    return '<div style="overflow-x:auto"><svg class="mon-map" viewBox="0 0 ' + W + ' ' + H +
+      '" role="img" aria-label="Host locations">' + grid + dots + '</svg></div>';
+  }
+
+  async function loadGeo() {
+    const cell = $('#geoCell');
+    try {
+      const d = await geoFromStore(40);
+
+      if (!d.countries.length) {
+        cell.innerHTML = '<h6><i class="fa fa-earth-americas me-1"></i> Where the infrastructure sits</h6>' +
+          '<p class="mon-note mb-0">No resolvable hosts in the flagged posts yet.</p>';
+        return;
+      }
+
+      const rows = d.countries.slice(0, 8).map((c) =>
+        '<div class="mon-geo-row">' +
+        '<span class="cc">' + esc(c.country_code || '??') + '</span>' +
+        '<div class="body"><div class="host">' + esc(c.country) + '</div>' +
+        '<div class="meta">' + c.hosts + ' host(s)' +
+        (c.hosting ? ' · ' + c.hosting + ' in datacenters' : '') +
+        (c.proxy ? ' · ' + c.proxy + ' behind a proxy' : '') + '</div></div></div>').join('');
+
+      const flags = (d.flags || []).slice(0, 6).map((f) =>
+        '<div class="mon-gap"><i class="fa fa-triangle-exclamation"></i><span>' +
+        esc(f.detail) + '</span></div>').join('');
+
+      cell.innerHTML = '<h6><i class="fa fa-earth-americas me-1"></i> Where the infrastructure sits</h6>' +
+        '<p class="mon-note">Resolved ' + d.hosts_checked + ' host(s) from ' +
+        d.posts_examined + ' flagged post(s).</p>' +
+        worldMap(d.countries) + '<div style="margin-top:10px">' + rows + '</div>' +
+        (flags ? '<div style="margin-top:8px">' + flags + '</div>' : '') +
+        '<p class="mon-note mb-0" style="margin-top:8px">' + esc(d.note) + '</p>';
+    } catch (e) {
+      cell.innerHTML = '<h6><i class="fa fa-earth-americas me-1"></i> Where the infrastructure sits</h6>' +
+        '<p class="mon-note mb-0">Could not resolve host locations.</p>';
+    }
+  }
+
   $('#rangeSel').addEventListener('change', load);
-  load();
+  load().then(() => {
+    // Sequential, not parallel: both hit external services and the second
+    // benefits from the DNS and geo caches the first fills.
+    loadPhishing().then(loadGeo);
+  });
 })();
 </script>
 {% endblock %}

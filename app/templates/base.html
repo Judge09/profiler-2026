@@ -99,6 +99,11 @@
 <!-- markdown-it -->
 <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
 
+<!-- Browser storage. Data lives in IndexedDB in this browser; the server only
+     fetches and scores. Loaded before any page script that reads it. -->
+<script src="{{ url_for('static', filename='js/store.js') }}"></script>
+<script src="{{ url_for('static', filename='js/datalayer.js') }}"></script>
+
 {% block scripts %}{% endblock %}
 
 <!-- Toast container -->

@@ -13,30 +13,153 @@ and plain web pages -- are fully implemented.
 
 Mirror hosts move and die constantly, so they live in `sources.json` and can
 be edited without touching this file.
+
+Fetching notes
+--------------
+* One pooled `requests.Session` per thread, with keep-alive and a retry policy
+  for the transient failures (429, 502-504) that would otherwise show up as a
+  dead source.
+* Responses are cached briefly in-process, so re-running a collection or
+  hitting several watches that share a feed does not re-fetch the same bytes.
+* User-Agent is rotated per host, because a single fixed UA is the easiest
+  possible fingerprint to block on.
 """
 
+import hashlib
 import html
 import json
 import os
+import random
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from xml.etree import ElementTree
 
 import requests
+from requests.adapters import HTTPAdapter
+
+from . import capabilities
+
+try:  # urllib3 v2 and v1 keep Retry in different places
+    from urllib3.util.retry import Retry
+except ImportError:  # pragma: no cover
+    Retry = None
 
 _SOURCES_PATH = os.path.join(os.path.dirname(__file__), "sources.json")
 
+USER_AGENTS = [
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+     "(KHTML, like Gecko) Version/17.4 Safari/605.1.15"),
+    ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/123.0.0.0 Safari/537.36"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 "
+     "Firefox/125.0"),
+]
+
 HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/124.0.0.0 Safari/537.36"),
+    "User-Agent": USER_AGENTS[0],
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 TIMEOUT = 12
 MAX_PER_SOURCE = 40
+CACHE_TTL = 120        # seconds a fetched body stays reusable
+CACHE_MAX = 256
+
+
+def _headers_for(url, extra=None):
+    """Per-host headers. The UA is stable per host but varies between hosts."""
+    host = _host(url)
+    ua = USER_AGENTS[int(hashlib.md5(host.encode()).hexdigest(), 16) % len(USER_AGENTS)]
+    h = dict(HEADERS, **{"User-Agent": ua})
+    if host:
+        h["Referer"] = "https://" + host + "/"
+    if extra:
+        h.update(extra)
+    return h
+
+
+# -- HTTP session pool -------------------------------------------------------
+
+_local = threading.local()
+
+
+def session():
+    """A pooled session for the calling thread.
+
+    Connection reuse is the single biggest win when a collection run pulls
+    several feeds from the same host, and the retry policy turns transient
+    429/5xx responses into a successful fetch instead of a dead source.
+    """
+    s = getattr(_local, "session", None)
+    if s is not None:
+        return s
+    s = requests.Session()
+    if Retry is not None:
+        retry = Retry(
+            total=2, connect=2, read=2, backoff_factor=0.6,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(["GET", "HEAD"]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=16,
+                              pool_maxsize=16)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+    _local.session = s
+    return s
+
+
+# -- Response cache ----------------------------------------------------------
+
+_cache = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(key):
+    with _cache_lock:
+        hit = _cache.get(key)
+        if not hit:
+            return None
+        ts, value = hit
+        if time.time() - ts > CACHE_TTL:
+            _cache.pop(key, None)
+            return None
+        return value
+
+
+def _cache_put(key, value):
+    with _cache_lock:
+        if len(_cache) >= CACHE_MAX:
+            # Drop the oldest quarter rather than clearing everything, so a
+            # busy run does not repeatedly lose its whole cache.
+            for k in sorted(_cache, key=lambda k: _cache[k][0])[:CACHE_MAX // 4]:
+                _cache.pop(k, None)
+        _cache[key] = (time.time(), value)
+
+
+def cache_clear():
+    with _cache_lock:
+        _cache.clear()
+
+
+def http_get(url, timeout=TIMEOUT, headers=None, use_cache=True, **kw):
+    """GET with pooling, retries and a short response cache."""
+    key = "GET:" + url
+    if use_cache:
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+    resp = session().get(url, headers=_headers_for(url, headers),
+                         timeout=timeout, **kw)
+    if use_cache and resp.status_code == 200:
+        _cache_put(key, resp)
+    return resp
 
 
 def load_sources():
@@ -75,22 +198,32 @@ def _iso(dt):
     return dt.replace(microsecond=0).isoformat()
 
 
-def _parse_date(value):
+def parse_dt(value):
+    """Parse a feed date into a naive UTC datetime, or None."""
     if not value:
         return None
     value = str(value).strip()
+    # Strip a trailing named zone that strptime cannot read alongside %z.
+    value = re.sub(r"\s+\((?:[A-Z]{2,5})\)$", "", value)
     fmts = ("%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S %Z",
-            "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d")
+            "%a, %d %b %Y %H:%M %z", "%d %b %Y %H:%M:%S %z",
+            "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d")
     for fmt in fmts:
         try:
-            dt = datetime.strptime(value.replace("GMT", "+0000"), fmt)
+            dt = datetime.strptime(value.replace("GMT", "+0000").replace("UTC", "+0000"), fmt)
             if dt.tzinfo:
                 dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-            return _iso(dt)
+            return dt.replace(microsecond=0)
         except ValueError:
             continue
     return None
+
+
+def _parse_date(value):
+    dt = parse_dt(value)
+    return _iso(dt) if dt else None
 
 
 def _unwrap(url):
@@ -165,10 +298,15 @@ def _result(ok=True, posts=None, note="", blocked=False, manual_url=""):
 
 # -- RSS / Atom --------------------------------------------------------------
 
-def fetch_feed(url, platform=None, limit=MAX_PER_SOURCE):
-    """Parse any RSS 2.0 or Atom feed into posts."""
+def fetch_feed(url, platform=None, limit=MAX_PER_SOURCE, since=None):
+    """Parse any RSS 2.0 or Atom feed into posts.
+
+    `since` is a naive UTC datetime; items older than it are dropped at the
+    source, so an analyst asking for "the last 7 days" does not pay to store
+    and score a year of archive.
+    """
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        resp = http_get(url)
         resp.raise_for_status()
         # Some feeds (Bing) declare no charset and default to latin-1, which
         # mojibakes any non-ASCII text. Trust the XML declaration instead.
@@ -196,7 +334,11 @@ def fetch_feed(url, platform=None, limit=MAX_PER_SOURCE):
             break
 
     posts = []
-    for item in items[:limit]:
+    stale = 0
+    for item in items[:max(limit * 3, limit)]:
+        if len(posts) >= limit:
+            break
+
         def text_of(*paths):
             for p in paths:
                 try:
@@ -220,8 +362,12 @@ def fetch_feed(url, platform=None, limit=MAX_PER_SOURCE):
         # otherwise look like the monitored subject impersonating itself.
         author = (_clean(text_of("author", "dc:creator", "atom:author/atom:name"))
                   or _publisher(title, link) or _host(link) or feed_title or "Feed")
-        published = _parse_date(text_of("pubDate", "atom:published", "atom:updated",
-                                        "dc:date"))
+        when = parse_dt(text_of("pubDate", "atom:published", "atom:updated",
+                                "dc:date"))
+        published = _iso(when) if when else None
+        if since and when and when < since:
+            stale += 1
+            continue
         combined = title if not body else (title + " — " + body if title else body)
         if not combined:
             continue
@@ -240,12 +386,15 @@ def fetch_feed(url, platform=None, limit=MAX_PER_SOURCE):
             "source_url": url,
         })
     note = "Fetched %d item%s" % (len(posts), "" if len(posts) == 1 else "s")
+    if stale:
+        note += " (%d older than the date filter)" % stale
     return _result(True, posts, note)
 
 
 # -- Reddit ------------------------------------------------------------------
 
-def fetch_reddit(query, limit=MAX_PER_SOURCE, subreddit=None, sort="new"):
+def fetch_reddit(query, limit=MAX_PER_SOURCE, subreddit=None, sort="new",
+                 since=None):
     """Reddit search.
 
     The JSON API 403s from datacenter IPs, so we try it first and fall back to
@@ -265,12 +414,12 @@ def fetch_reddit(query, limit=MAX_PER_SOURCE, subreddit=None, sort="new"):
     search_url = "https://www.reddit.com/search/?q=%s&sort=%s" % (quote_plus(query), sort)
 
     def _rss_fallback(reason):
-        r = fetch_feed(rss, platform="Reddit", limit=limit)
+        r = fetch_feed(rss, platform="Reddit", limit=limit, since=since)
         if r["ok"] and r["posts"]:
             r["note"] = "Fetched %d via Reddit RSS (%s)" % (len(r["posts"]), reason)
             return r
         # Reddit blocks datacenter IPs on both endpoints; try the mirrors next.
-        mirrored = fetch_via_mirrors(query, "teddit", limit)
+        mirrored = fetch_via_mirrors(query, "teddit", limit, since=since)
         if mirrored["ok"] and mirrored["posts"]:
             return mirrored
         return _result(
@@ -280,7 +429,7 @@ def fetch_reddit(query, limit=MAX_PER_SOURCE, subreddit=None, sort="new"):
             manual_url=search_url)
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        resp = http_get(url, headers={"Accept": "application/json"})
         if resp.status_code in (403, 429):
             return _rss_fallback("JSON API returned %d" % resp.status_code)
         resp.raise_for_status()
@@ -301,6 +450,9 @@ def fetch_reddit(query, limit=MAX_PER_SOURCE, subreddit=None, sort="new"):
         if not combined:
             continue
         created = d.get("created_utc")
+        when = datetime.fromtimestamp(created, timezone.utc).replace(tzinfo=None) if created else None
+        if since and when and when < since:
+            continue
         posts.append({
             "platform": "Reddit",
             "author": d.get("author") or "unknown",
@@ -308,7 +460,7 @@ def fetch_reddit(query, limit=MAX_PER_SOURCE, subreddit=None, sort="new"):
             "verified": False,
             "text": combined[:4000],
             "url": "https://www.reddit.com" + (d.get("permalink") or ""),
-            "posted_at": _iso(datetime.utcfromtimestamp(created)) if created else None,
+            "posted_at": _iso(when) if when else None,
             "source_url": url,
             "extra": {"subreddit": d.get("subreddit"), "score": d.get("score"),
                       "comments": d.get("num_comments")},
@@ -318,11 +470,14 @@ def fetch_reddit(query, limit=MAX_PER_SOURCE, subreddit=None, sort="new"):
 
 # -- Hacker News -------------------------------------------------------------
 
-def fetch_hackernews(query, limit=MAX_PER_SOURCE):
+def fetch_hackernews(query, limit=MAX_PER_SOURCE, since=None):
     url = ("https://hn.algolia.com/api/v1/search_by_date?query=%s&tags=(story,comment)&hitsPerPage=%d"
            % (quote_plus(query), limit))
+    if since:
+        url += "&numericFilters=created_at_i>%d" % int(since.replace(
+            tzinfo=timezone.utc).timestamp())
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        resp = http_get(url, headers={"Accept": "application/json"})
         resp.raise_for_status()
         data = resp.json()
     except requests.exceptions.RequestException as e:
@@ -351,28 +506,43 @@ def fetch_hackernews(query, limit=MAX_PER_SOURCE):
 
 # -- News aggregators (RSS-backed, no key) -----------------------------------
 
-def fetch_google_news(query, limit=MAX_PER_SOURCE):
-    url = ("https://news.google.com/rss/search?q=%s&hl=en-US&gl=US&ceid=US:en"
-           % quote_plus(query))
-    r = fetch_feed(url, platform="News site", limit=limit)
+def fetch_google_news(query, limit=MAX_PER_SOURCE, since=None, region=None):
+    # Google News accepts a relative recency operator directly in the query,
+    # which narrows at the source instead of fetching a year and discarding it.
+    q = query
+    if since:
+        days = max(1, (datetime.utcnow() - since).days)
+        q = "%s when:%dd" % (query, min(days, 365))
+    hl, gl, ceid = (region or "en-US", (region or "en-US").split("-")[-1],
+                    "%s:%s" % ((region or "en-US").split("-")[-1],
+                               (region or "en-US").split("-")[0]))
+    url = ("https://news.google.com/rss/search?q=%s&hl=%s&gl=%s&ceid=%s"
+           % (quote_plus(q), hl, gl, ceid))
+    r = fetch_feed(url, platform="News site", limit=limit, since=since)
     if r["ok"]:
         r["note"] = "Fetched %d Google News result(s)" % len(r["posts"])
     return r
 
 
-def fetch_bing_news(query, limit=MAX_PER_SOURCE):
+def fetch_bing_news(query, limit=MAX_PER_SOURCE, since=None):
     url = "https://www.bing.com/news/search?q=%s&format=RSS" % quote_plus(query)
-    r = fetch_feed(url, platform="News site", limit=limit)
+    if since:
+        days = (datetime.utcnow() - since).days
+        # Bing exposes only coarse buckets, so map to the nearest it supports.
+        url += "&qft=" + quote_plus(
+            "+filterui:age-lt%s" % ("1440" if days <= 1 else
+                                    "10080" if days <= 7 else "43200"))
+    r = fetch_feed(url, platform="News site", limit=limit, since=since)
     if r["ok"]:
         r["note"] = "Fetched %d Bing News result(s)" % len(r["posts"])
     return r
 
 
-def fetch_youtube(query, limit=MAX_PER_SOURCE, channel_id=None):
+def fetch_youtube(query, limit=MAX_PER_SOURCE, channel_id=None, since=None):
     """YouTube exposes per-channel Atom feeds without a key. Search needs one."""
     if channel_id:
         url = "https://www.youtube.com/feeds/videos.xml?channel_id=%s" % quote_plus(channel_id)
-        return fetch_feed(url, platform="YouTube", limit=limit)
+        return fetch_feed(url, platform="YouTube", limit=limit, since=since)
     return _result(
         False, blocked=True,
         note=("YouTube keyword search needs an API key. Per-channel feeds work: "
@@ -382,7 +552,7 @@ def fetch_youtube(query, limit=MAX_PER_SOURCE, channel_id=None):
 
 # -- Mirror-based social collection ------------------------------------------
 
-def fetch_via_mirrors(query, kind, limit=MAX_PER_SOURCE):
+def fetch_via_mirrors(query, kind, limit=MAX_PER_SOURCE, since=None):
     """Try each configured mirror in turn until one answers.
 
     Nitter (X) and Teddit (Reddit) mirrors are volunteer-run and frequently
@@ -393,7 +563,8 @@ def fetch_via_mirrors(query, kind, limit=MAX_PER_SOURCE):
     tried = []
     for tmpl in mirrors:
         url = tmpl.replace("{query}", quote_plus(query))
-        r = fetch_feed(url, platform="X" if kind == "nitter" else "Reddit", limit=limit)
+        r = fetch_feed(url, platform="X" if kind == "nitter" else "Reddit",
+                       limit=limit, since=since)
         if r["ok"] and r["posts"]:
             r["note"] = "Fetched %d via mirror %s" % (len(r["posts"]), _host(url))
             return r
@@ -417,7 +588,7 @@ def fetch_page(url, limit=MAX_PER_SOURCE):
     if not re.match(r"^https?://", url or "", re.I):
         return _result(False, note="Enter a full http:// or https:// URL")
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        resp = http_get(url)
         resp.raise_for_status()
     except requests.exceptions.RequestException as e:
         return _result(False, note="Could not fetch the page: %s" % type(e).__name__)
@@ -456,6 +627,600 @@ def fetch_page(url, limit=MAX_PER_SOURCE):
     return _result(True, posts, "Extracted %d text block(s)" % len(posts))
 
 
+# -- Additional open sources (threat hunting / SOCMINT) ----------------------
+
+def fetch_mastodon(query, limit=MAX_PER_SOURCE, instance=None, since=None):
+    """Mastodon's public hashtag timeline needs no key.
+
+    The fediverse is where a lot of coordinated messaging moves once it is
+    pushed off the mainstream platforms, so it is worth having.
+    """
+    host = (instance or "mastodon.social").replace("https://", "").strip("/")
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", query) if w]
+    tag = words[0] if words else ""
+    if not tag:
+        return _result(False, note="Mastodon needs a word to use as a hashtag")
+    url = ("https://%s/api/v1/timelines/tag/%s?limit=%d"
+           % (host, quote_plus(tag), min(limit, 40)))
+    try:
+        resp = http_get(url, headers={"Accept": "application/json"})
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.RequestException as e:
+        return _result(False, note="Could not reach %s: %s" % (host, type(e).__name__))
+    except ValueError:
+        return _result(False, note="%s returned a non-JSON response" % host)
+
+    posts = []
+    for item in (data if isinstance(data, list) else [])[:limit]:
+        body = _clean(item.get("content") or "")
+        if not body:
+            continue
+        when = parse_dt(item.get("created_at"))
+        if since and when and when < since:
+            continue
+        acct = item.get("account") or {}
+        posts.append({
+            "platform": "Mastodon",
+            "author": acct.get("display_name") or acct.get("username") or "unknown",
+            "handle": acct.get("acct") or "",
+            "verified": False,
+            "text": body[:4000],
+            "url": item.get("url") or item.get("uri") or "",
+            "posted_at": _iso(when) if when else None,
+            "source_url": url,
+            "extra": {"boosts": item.get("reblogs_count"),
+                      "replies": item.get("replies_count")},
+        })
+    return _result(True, posts,
+                   "Fetched %d Mastodon post(s) from #%s" % (len(posts), tag))
+
+
+def fetch_lemmy(query, limit=MAX_PER_SOURCE, instance=None, since=None):
+    """Lemmy is the fediverse's Reddit, and its search API is open."""
+    host = (instance or "lemmy.world").replace("https://", "").strip("/")
+    url = ("https://%s/api/v3/search?q=%s&type_=Posts&sort=New&limit=%d"
+           % (host, quote_plus(query), min(limit, 50)))
+    try:
+        resp = http_get(url, headers={"Accept": "application/json"})
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.RequestException as e:
+        return _result(False, note="Could not reach %s: %s" % (host, type(e).__name__))
+    except ValueError:
+        return _result(False, note="%s returned a non-JSON response" % host)
+
+    posts = []
+    for entry in (data.get("posts") or [])[:limit]:
+        post = entry.get("post") or {}
+        creator = entry.get("creator") or {}
+        body = ((post.get("name") or "") + " - " + (post.get("body") or "")).strip(" -")
+        if not body:
+            continue
+        when = parse_dt(post.get("published"))
+        if since and when and when < since:
+            continue
+        posts.append({
+            "platform": "Lemmy",
+            "author": creator.get("display_name") or creator.get("name") or "unknown",
+            "handle": creator.get("name") or "",
+            "verified": False,
+            "text": body[:4000],
+            "url": post.get("ap_id") or post.get("url") or "",
+            "posted_at": _iso(when) if when else None,
+            "source_url": url,
+        })
+    return _result(True, posts, "Fetched %d Lemmy post(s)" % len(posts))
+
+
+def fetch_wikipedia(query, limit=MAX_PER_SOURCE, since=None):
+    """Articles mentioning the subject, most recently edited first.
+
+    Narrative work often shows up as article edits before it shows up
+    anywhere else, and the API is open.
+    """
+    url = ("https://en.wikipedia.org/w/api.php?action=query&list=search"
+           "&srsearch=%s&srsort=last_edit_desc&srlimit=%d&format=json"
+           % (quote_plus(query), min(limit, 50)))
+    try:
+        resp = http_get(url, headers={"Accept": "application/json"})
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.RequestException as e:
+        return _result(False, note="Could not reach Wikipedia: %s" % type(e).__name__)
+    except ValueError:
+        return _result(False, note="Wikipedia returned a non-JSON response")
+
+    posts = []
+    for hit in ((data.get("query") or {}).get("search") or [])[:limit]:
+        when = parse_dt(hit.get("timestamp"))
+        if since and when and when < since:
+            continue
+        title = hit.get("title") or ""
+        snippet = _clean(hit.get("snippet") or "")
+        posts.append({
+            "platform": "Wikipedia",
+            "author": title or "Wikipedia",
+            "handle": "en.wikipedia.org",
+            "verified": False,
+            "text": (title + " - " + snippet)[:4000],
+            "url": "https://en.wikipedia.org/wiki/" + quote_plus(title.replace(" ", "_")),
+            "posted_at": _iso(when) if when else None,
+            "source_url": url,
+        })
+    return _result(True, posts, "Fetched %d Wikipedia article(s)" % len(posts))
+
+
+def fetch_paste_dorks(query, limit=MAX_PER_SOURCE, since=None):
+    """Paste sites are where leaked personal data usually surfaces first.
+
+    Their own search is gated, so this returns a targeted dork rather than
+    pretending to scrape. Real signal for a doxxing watch, honestly labelled.
+    """
+    sites = ["pastebin.com", "ghostbin.com", "controlc.com", "justpaste.it",
+             "rentry.co", "telegra.ph"]
+    dork = "(%s) (%s)" % (query, " OR ".join("site:" + s for s in sites))
+    return _result(
+        False, blocked=True,
+        note=("Paste sites block automated search. This dork finds exposed data "
+              "for the subject -- open it and import anything relevant."),
+        manual_url="https://www.google.com/search?q=" + quote_plus(dork))
+
+
+def fetch_all_feeds(query, limit=MAX_PER_SOURCE, since=None, feeds=None):
+    """Fan out across every fixed feed in sources.json at once.
+
+    One action that actually sweeps the configured newsrooms, instead of making
+    the analyst add each feed by hand. Query filtering happens later, in the
+    relevance pass, because a newsroom feed carries everything it published.
+    """
+    configured = feeds or [f["url"] for f in load_sources().get("suggested_feeds", [])
+                           if "{query}" not in (f.get("url") or "")]
+    if not configured:
+        return _result(False, note="No fixed feeds are configured in sources.json")
+
+    posts, ok, notes = [], 0, []
+    with ThreadPoolExecutor(max_workers=min(8, len(configured))) as pool:
+        futures = {pool.submit(fetch_feed, u, None, limit, since): u
+                   for u in configured}
+        for fut in as_completed(futures):
+            try:
+                r = fut.result()
+            except Exception as e:
+                notes.append("%s: %s" % (_host(futures[fut]), type(e).__name__))
+                continue
+            if r["ok"]:
+                ok += 1
+                posts.extend(r["posts"])
+            else:
+                notes.append("%s: %s" % (_host(futures[fut]), r["note"]))
+
+    note = "Fetched %d item(s) from %d of %d feeds" % (len(posts), ok, len(configured))
+    if notes:
+        note += " - failures: " + "; ".join(notes[:3])
+    return _result(True, posts[:limit * 4], note)
+
+
+# -- Library-backed collectors -----------------------------------------------
+#
+# Each of these needs an optional dependency and, in some cases, a credential.
+# They all follow the same contract: if the library is missing or the key is
+# absent, say so plainly and hand back a manual URL. A source that cannot run
+# must never look like a source that found nothing.
+
+def _needs(cap, query, manual=None):
+    """The standard 'this capability is not usable here' result."""
+    info = capabilities.probe(cap)
+    note = "%s is unavailable: %s" % (info.get("label", cap),
+                                      info.get("reason") or "not configured")
+    if info.get("needs"):
+        note += ". Needs %s" % info["needs"]
+    if info.get("caveat"):
+        note += ". " + info["caveat"]
+    return _result(False, blocked=True, note=note,
+                   manual_url=manual or ("https://www.google.com/search?q="
+                                         + quote_plus(query)))
+
+
+def _cred(platform, key):
+    """Read a secret from the vault, or None.
+
+    Credentials live in the encrypted vault rather than in environment
+    variables, so nothing sensitive sits in the process environment or in a
+    deployment config.
+    """
+    try:
+        from . import vault
+        from ..models import MonitorCredential
+        if not vault.is_unlocked():
+            return None
+        rows = MonitorCredential.query.filter_by(platform=platform,
+                                                 enabled=True).all()
+        for c in rows:
+            data = vault.decrypt(c.secret_blob) or {}
+            if key in data:
+                return data[key]
+            if data.get("token") and key.endswith("token"):
+                return data["token"]
+    except Exception:
+        return None
+    return None
+
+
+def fetch_praw(query, limit=MAX_PER_SOURCE, since=None, subreddit=None):
+    """Authenticated Reddit via PRAW.
+
+    The public JSON endpoint is blocked from most datacenter IPs; an app-only
+    OAuth token is not, so this is the reliable path when credentials exist.
+    """
+    praw = capabilities.load("praw")
+    if praw is None:
+        return _needs("praw", query,
+                      "https://www.reddit.com/search/?q=" + quote_plus(query))
+
+    cid = _cred("reddit", "client_id") or os.environ.get("REDDIT_CLIENT_ID")
+    secret = _cred("reddit", "client_secret") or os.environ.get("REDDIT_CLIENT_SECRET")
+    if not cid or not secret:
+        return _result(False, blocked=True,
+                       note=("PRAW is installed but has no Reddit app credentials. "
+                             "Add a vault credential with platform 'reddit' holding "
+                             "client_id and client_secret, or set REDDIT_CLIENT_ID "
+                             "and REDDIT_CLIENT_SECRET."),
+                       manual_url="https://www.reddit.com/search/?q=" + quote_plus(query))
+
+    try:
+        reddit = praw.Reddit(client_id=cid, client_secret=secret,
+                             user_agent="profiler-signal-monitor/1.0",
+                             check_for_async=False)
+        target = reddit.subreddit(subreddit or "all")
+        posts = []
+        for sub in target.search(query, sort="new", limit=min(limit, 100)):
+            when = datetime.fromtimestamp(sub.created_utc, timezone.utc).replace(tzinfo=None) if sub.created_utc else None
+            if since and when and when < since:
+                continue
+            body = (sub.title or "")
+            if getattr(sub, "selftext", ""):
+                body += " - " + sub.selftext
+            posts.append({
+                "platform": "Reddit",
+                "author": str(sub.author) if sub.author else "[deleted]",
+                "handle": str(sub.author) if sub.author else "",
+                "verified": False,
+                "text": body[:4000],
+                "url": "https://www.reddit.com" + sub.permalink,
+                "posted_at": _iso(when) if when else None,
+                "source_url": "praw://" + (subreddit or "all"),
+                "extra": {"score": sub.score, "comments": sub.num_comments,
+                          "subreddit": str(sub.subreddit)},
+            })
+        return _result(True, posts, "Fetched %d Reddit post(s) via the API" % len(posts))
+    except Exception as e:
+        return _result(False, note="PRAW failed: %s" % type(e).__name__,
+                       manual_url="https://www.reddit.com/search/?q=" + quote_plus(query))
+
+
+def fetch_telegram(query, limit=MAX_PER_SOURCE, since=None, channel=None):
+    """Public Telegram channel history via Telethon.
+
+    Telegram carries a large share of coordinated messaging, and public
+    channels are readable with an API id. Without one, fall back to the
+    web preview, which serves public channels without auth.
+    """
+    if not channel:
+        return _result(False, blocked=True,
+                       note=("Telegram needs a public channel name (for example "
+                             "'somechannel'), not a keyword. Add it as the source URL."),
+                       manual_url="https://t.me/s/" + quote_plus(query.split()[0] if query.split() else ""))
+
+    telethon = capabilities.load("telethon")
+    api_id = _cred("telegram", "api_id") or os.environ.get("TELEGRAM_API_ID")
+    api_hash = _cred("telegram", "api_hash") or os.environ.get("TELEGRAM_API_HASH")
+
+    # Web-preview fallback: t.me/s/<channel> renders public posts as plain HTML
+    # and needs no credentials at all.
+    if telethon is None or not api_id or not api_hash:
+        name = re.sub(r"^https?://t\.me/(s/)?", "", channel).strip("/")
+        page = fetch_page("https://t.me/s/" + quote_plus(name), limit=limit)
+        if page["ok"] and page["posts"]:
+            for p in page["posts"]:
+                p["platform"] = "Telegram"
+                p["handle"] = "@" + name
+                p["author"] = name
+            page["note"] = ("Fetched %d post(s) from the public web preview "
+                            "(no API credentials configured)" % len(page["posts"]))
+            return page
+        return _result(False, blocked=True,
+                       note=("Telegram API credentials are not configured and the "
+                             "public web preview returned nothing. Set "
+                             "TELEGRAM_API_ID and TELEGRAM_API_HASH, or check the "
+                             "channel is public."),
+                       manual_url="https://t.me/s/" + quote_plus(name))
+
+    try:
+        from telethon.sync import TelegramClient
+        from telethon.sessions import StringSession
+        sess = _cred("telegram", "session") or ""
+        posts = []
+        with TelegramClient(StringSession(sess), int(api_id), api_hash) as client:
+            for msg in client.iter_messages(channel, limit=min(limit, 100)):
+                if not msg.text:
+                    continue
+                when = msg.date.replace(tzinfo=None) if msg.date else None
+                if since and when and when < since:
+                    break
+                posts.append({
+                    "platform": "Telegram",
+                    "author": getattr(msg.sender, "username", None) or channel,
+                    "handle": "@" + str(channel).lstrip("@"),
+                    "verified": False,
+                    "text": msg.text[:4000],
+                    "url": "https://t.me/%s/%d" % (str(channel).lstrip("@"), msg.id),
+                    "posted_at": _iso(when) if when else None,
+                    "source_url": "telegram://" + str(channel),
+                    "extra": {"views": getattr(msg, "views", None),
+                              "forwards": getattr(msg, "forwards", None)},
+                })
+        return _result(True, posts, "Fetched %d Telegram message(s)" % len(posts))
+    except Exception as e:
+        return _result(False, note="Telethon failed: %s" % type(e).__name__,
+                       manual_url="https://t.me/s/" + quote_plus(str(channel).lstrip("@")))
+
+
+def fetch_tweepy(query, limit=MAX_PER_SOURCE, since=None):
+    """X / Twitter via the official API.
+
+    Requires a paid API tier; there is no free search endpoint any more. Said
+    plainly rather than discovered through an empty result.
+    """
+    tweepy = capabilities.load("tweepy")
+    manual = "https://x.com/search?q=%s&f=live" % quote_plus(query)
+    if tweepy is None:
+        return _needs("tweepy", query, manual)
+
+    token = _cred("twitter", "bearer_token") or os.environ.get("TWITTER_BEARER_TOKEN")
+    if not token:
+        return _result(False, blocked=True,
+                       note=("Tweepy is installed but no bearer token is configured. "
+                             "X search requires a paid API tier. Add a vault "
+                             "credential with platform 'twitter', or set "
+                             "TWITTER_BEARER_TOKEN."),
+                       manual_url=manual)
+    try:
+        client = tweepy.Client(bearer_token=token)
+        resp = client.search_recent_tweets(
+            query=query[:512], max_results=min(max(limit, 10), 100),
+            tweet_fields=["created_at", "public_metrics", "author_id"],
+            expansions=["author_id"], user_fields=["username", "name", "verified"])
+        users = {u.id: u for u in (resp.includes or {}).get("users", [])}
+        posts = []
+        for tw in (resp.data or []):
+            when = tw.created_at.replace(tzinfo=None) if tw.created_at else None
+            if since and when and when < since:
+                continue
+            u = users.get(tw.author_id)
+            posts.append({
+                "platform": "X",
+                "author": (u.name if u else "") or "unknown",
+                "handle": (u.username if u else "") or "",
+                "verified": bool(getattr(u, "verified", False)),
+                "text": (tw.text or "")[:4000],
+                "url": "https://x.com/%s/status/%s" % (
+                    (u.username if u else "i"), tw.id),
+                "posted_at": _iso(when) if when else None,
+                "source_url": "tweepy://search",
+                "extra": dict(tw.public_metrics or {}),
+            })
+        return _result(True, posts, "Fetched %d post(s) from the X API" % len(posts))
+    except Exception as e:
+        return _result(False, note="X API call failed: %s" % type(e).__name__,
+                       manual_url=manual)
+
+
+def fetch_instagram(query, limit=MAX_PER_SOURCE, since=None, profile=None):
+    """Public Instagram profile posts via Instaloader."""
+    manual = "https://www.instagram.com/explore/tags/%s/" % quote_plus(
+        re.sub(r"[^A-Za-z0-9]", "", query))
+    il = capabilities.load("instaloader")
+    if il is None:
+        return _needs("instaloader", query, manual)
+    target = (profile or "").strip().lstrip("@")
+    if not target:
+        return _result(False, blocked=True,
+                       note=("Instaloader reads a named public profile, not a keyword "
+                             "search. Put the username in the source URL field."),
+                       manual_url=manual)
+    try:
+        L = il.Instaloader(quiet=True, download_pictures=False,
+                           download_videos=False, download_comments=False,
+                           save_metadata=False)
+        prof = il.Profile.from_username(L.context, target)
+        posts = []
+        for post in prof.get_posts():
+            if len(posts) >= limit:
+                break
+            when = post.date_utc
+            if since and when and when < since:
+                break
+            posts.append({
+                "platform": "Instagram",
+                "author": prof.full_name or target,
+                "handle": target,
+                "verified": bool(prof.is_verified),
+                "text": (post.caption or "")[:4000],
+                "url": "https://www.instagram.com/p/%s/" % post.shortcode,
+                "posted_at": _iso(when) if when else None,
+                "source_url": "instaloader://" + target,
+                "extra": {"likes": post.likes, "comments": post.comments},
+            })
+        return _result(True, posts, "Fetched %d Instagram post(s) from @%s"
+                       % (len(posts), target))
+    except Exception as e:
+        return _result(False, blocked=True,
+                       note=("Instagram refused the request (%s). It rate-limits "
+                             "hard and blocks unauthenticated collection."
+                             % type(e).__name__),
+                       manual_url=manual)
+
+
+def fetch_video(query, limit=MAX_PER_SOURCE, since=None, url=None):
+    """Public video metadata via yt-dlp.
+
+    Works across YouTube, TikTok and many other hosts without a key, and never
+    downloads the media itself -- metadata only.
+    """
+    ytdlp = capabilities.load("yt_dlp")
+    manual = "https://www.youtube.com/results?search_query=" + quote_plus(query)
+    if ytdlp is None:
+        return _needs("yt_dlp", query, manual)
+
+    target = url or ("ytsearch%d:%s" % (min(limit, 25), query))
+    opts = {"quiet": True, "skip_download": True, "extract_flat": "in_playlist",
+            "noplaylist": False, "ignoreerrors": True, "socket_timeout": TIMEOUT}
+    try:
+        with ytdlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(target, download=False)
+    except Exception as e:
+        return _result(False, note="yt-dlp failed: %s" % type(e).__name__,
+                       manual_url=manual)
+
+    entries = info.get("entries") if isinstance(info, dict) else None
+    if entries is None:
+        entries = [info] if info else []
+
+    posts = []
+    for e in entries[:limit]:
+        if not e:
+            continue
+        stamp = e.get("upload_date") or ""
+        when = None
+        if len(stamp) == 8 and stamp.isdigit():
+            try:
+                when = datetime.strptime(stamp, "%Y%m%d")
+            except ValueError:
+                when = None
+        if since and when and when < since:
+            continue
+        body = (e.get("title") or "")
+        if e.get("description"):
+            body += " - " + e["description"]
+        if not body.strip():
+            continue
+        posts.append({
+            "platform": "YouTube" if "youtube" in (e.get("webpage_url") or target)
+                        else "Video",
+            "author": e.get("uploader") or e.get("channel") or "unknown",
+            "handle": e.get("uploader_id") or e.get("channel_id") or "",
+            "verified": False,
+            "text": body[:4000],
+            "url": e.get("webpage_url") or e.get("url") or "",
+            "posted_at": _iso(when) if when else None,
+            "source_url": "yt-dlp://" + str(target)[:80],
+            "extra": {"views": e.get("view_count"), "duration": e.get("duration")},
+        })
+    return _result(True, posts, "Fetched metadata for %d video(s)" % len(posts))
+
+
+def fetch_article(query, limit=MAX_PER_SOURCE, since=None, url=None):
+    """Clean article text via trafilatura, falling back to BeautifulSoup.
+
+    `fetch_page` grabs paragraph blocks with regex, which drags in navigation
+    and cookie banners. When trafilatura is installed this returns the actual
+    article body instead.
+    """
+    target = url or query
+    if not re.match(r"^https?://", target or "", re.I):
+        return _result(False, note="Enter a full http:// or https:// URL")
+
+    traf = capabilities.load("trafilatura")
+    if traf is not None:
+        try:
+            downloaded = traf.fetch_url(target)
+            if downloaded:
+                text = traf.extract(downloaded, include_comments=False,
+                                    include_tables=False, no_fallback=False)
+                meta = traf.extract_metadata(downloaded)
+                if text:
+                    when = parse_dt(getattr(meta, "date", None)) if meta else None
+                    return _result(True, [{
+                        "platform": "News site",
+                        "author": (getattr(meta, "author", None)
+                                   or getattr(meta, "sitename", None)
+                                   or _host(target)),
+                        "handle": _host(target),
+                        "verified": False,
+                        "text": ((getattr(meta, "title", "") or "") + " - " + text)[:4000],
+                        "url": target,
+                        "posted_at": _iso(when) if when else None,
+                        "source_url": target,
+                    }], "Extracted the article body with trafilatura")
+        except Exception:
+            pass  # fall through to the parser below
+
+    bs4 = capabilities.load("beautifulsoup4")
+    if bs4 is not None:
+        try:
+            resp = http_get(target)
+            resp.raise_for_status()
+            soup = bs4.BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "header",
+                             "aside", "form"]):
+                tag.decompose()
+            title = (soup.title.string or "").strip() if soup.title else ""
+            body = " ".join(p.get_text(" ", strip=True)
+                            for p in soup.find_all(["p", "li", "blockquote"]))
+            body = re.sub(r"\s+", " ", body).strip()
+            if len(body) >= 60:
+                return _result(True, [{
+                    "platform": "Web page",
+                    "author": title or _host(target),
+                    "handle": _host(target),
+                    "verified": False,
+                    "text": ((title + " - ") if title else "") + body[:4000],
+                    "url": target, "posted_at": None, "source_url": target,
+                }], "Extracted the page text with BeautifulSoup")
+        except Exception:
+            pass
+
+    return fetch_page(target, limit=limit)
+
+
+def fetch_browser(query, limit=MAX_PER_SOURCE, since=None, url=None):
+    """Render a JavaScript-heavy page with Playwright and read the result.
+
+    This is the last resort for sites that render nothing server-side. It is
+    unavailable in serverless deployments, which the capability layer reports.
+    """
+    manual = url or ("https://www.google.com/search?q=" + quote_plus(query))
+    if not url:
+        return _result(False, note="Browser rendering needs a URL to open",
+                       blocked=True, manual_url=manual)
+    if not capabilities.available("playwright"):
+        return _needs("playwright", query, manual)
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page(user_agent=USER_AGENTS[0])
+            page.goto(url, timeout=TIMEOUT * 1000, wait_until="domcontentloaded")
+            page.wait_for_timeout(1200)
+            title = page.title()
+            body = page.inner_text("body")
+            browser.close()
+    except Exception as e:
+        return _result(False, note="Browser render failed: %s" % type(e).__name__,
+                       blocked=True, manual_url=manual)
+
+    chunks = [c.strip() for c in re.split(r"\n{2,}", body or "") if len(c.strip()) >= 60]
+    posts = [{
+        "platform": "Web page", "author": title or _host(url), "handle": _host(url),
+        "verified": False, "text": c[:4000], "url": url,
+        "posted_at": None, "source_url": url,
+    } for c in chunks[:limit]]
+    if not posts:
+        return _result(False, note="The page rendered but held no readable text")
+    return _result(True, posts, "Rendered the page and read %d block(s)" % len(posts))
+
+
 # -- Login-walled platforms --------------------------------------------------
 
 _MANUAL = {
@@ -491,19 +1256,65 @@ def dork_urls(query, domains=None):
 
 # -- Dispatch ----------------------------------------------------------------
 
+def _opt(o, key, default=None):
+    """Read a per-source option, falling back to the shared options dict."""
+    if not isinstance(o, dict):
+        return default
+    v = o.get(key)
+    return default if v in (None, "") else v
+
+
 COLLECTORS = {
-    "google_news": lambda q, o: fetch_google_news(q, o.get("limit", MAX_PER_SOURCE)),
-    "bing_news": lambda q, o: fetch_bing_news(q, o.get("limit", MAX_PER_SOURCE)),
-    "reddit": lambda q, o: fetch_reddit(q, o.get("limit", MAX_PER_SOURCE),
-                                        o.get("subreddit"), o.get("sort", "new")),
-    "hackernews": lambda q, o: fetch_hackernews(q, o.get("limit", MAX_PER_SOURCE)),
-    "youtube": lambda q, o: fetch_youtube(q, o.get("limit", MAX_PER_SOURCE),
-                                          o.get("channel_id")),
-    "rss": lambda q, o: fetch_feed(o.get("url") or q, o.get("platform"),
-                                   o.get("limit", MAX_PER_SOURCE)),
-    "page": lambda q, o: fetch_page(o.get("url") or q, o.get("limit", MAX_PER_SOURCE)),
-    "nitter": lambda q, o: fetch_via_mirrors(q, "nitter", o.get("limit", MAX_PER_SOURCE)),
-    "teddit": lambda q, o: fetch_via_mirrors(q, "teddit", o.get("limit", MAX_PER_SOURCE)),
+    # open, no key
+    "google_news": lambda q, o: fetch_google_news(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                                  _opt(o, "since"), _opt(o, "region")),
+    "bing_news": lambda q, o: fetch_bing_news(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                              _opt(o, "since")),
+    "all_feeds": lambda q, o: fetch_all_feeds(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                              _opt(o, "since")),
+    "reddit": lambda q, o: fetch_reddit(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                        _opt(o, "subreddit"), _opt(o, "sort", "new"),
+                                        _opt(o, "since")),
+    "hackernews": lambda q, o: fetch_hackernews(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                                _opt(o, "since")),
+    "mastodon": lambda q, o: fetch_mastodon(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                            _opt(o, "instance"), _opt(o, "since")),
+    "lemmy": lambda q, o: fetch_lemmy(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                      _opt(o, "instance"), _opt(o, "since")),
+    "wikipedia": lambda q, o: fetch_wikipedia(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                              _opt(o, "since")),
+    "rss": lambda q, o: fetch_feed(_opt(o, "url") or q, _opt(o, "platform"),
+                                   _opt(o, "limit", MAX_PER_SOURCE), _opt(o, "since")),
+    "page": lambda q, o: fetch_page(_opt(o, "url") or q, _opt(o, "limit", MAX_PER_SOURCE)),
+    "article": lambda q, o: fetch_article(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                          _opt(o, "since"), _opt(o, "url")),
+    "youtube": lambda q, o: fetch_youtube(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                          _opt(o, "channel_id") or _opt(o, "url"),
+                                          _opt(o, "since")),
+    "video": lambda q, o: fetch_video(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                      _opt(o, "since"), _opt(o, "url")),
+    "nitter": lambda q, o: fetch_via_mirrors(q, "nitter", _opt(o, "limit", MAX_PER_SOURCE),
+                                             _opt(o, "since")),
+    "teddit": lambda q, o: fetch_via_mirrors(q, "teddit", _opt(o, "limit", MAX_PER_SOURCE),
+                                             _opt(o, "since")),
+
+    # library-backed, key or session required
+    "praw": lambda q, o: fetch_praw(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                    _opt(o, "since"), _opt(o, "subreddit")),
+    "telegram": lambda q, o: fetch_telegram(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                            _opt(o, "since"),
+                                            _opt(o, "channel") or _opt(o, "url")),
+    "tweepy": lambda q, o: fetch_tweepy(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                        _opt(o, "since")),
+    "instagram_api": lambda q, o: fetch_instagram(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                                  _opt(o, "since"),
+                                                  _opt(o, "profile") or _opt(o, "url")),
+    "browser": lambda q, o: fetch_browser(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                          _opt(o, "since"), _opt(o, "url")),
+
+    # dork-only
+    "pastes": lambda q, o: fetch_paste_dorks(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                             _opt(o, "since")),
     "facebook": lambda q, o: manual_only("facebook", q),
     "instagram": lambda q, o: manual_only("instagram", q),
     "tiktok": lambda q, o: manual_only("tiktok", q),
@@ -511,43 +1322,112 @@ COLLECTORS = {
     "linkedin": lambda q, o: manual_only("linkedin", q),
 }
 
+# `live` drives the green/amber dot in the UI. `cap` names the optional
+# capability a source needs, so the UI can grey it out and explain why rather
+# than letting the analyst select something that cannot run.
 SOURCE_META = [
-    {"key": "google_news", "name": "Google News", "live": True,
-     "desc": "Keyword search across indexed news outlets."},
-    {"key": "bing_news", "name": "Bing News", "live": True,
+    {"key": "google_news", "name": "Google News", "live": True, "group": "News",
+     "desc": "Keyword search across indexed news outlets. Honours the date filter."},
+    {"key": "bing_news", "name": "Bing News", "live": True, "group": "News",
      "desc": "Second news index; catches what Google misses."},
-    {"key": "reddit", "name": "Reddit", "live": True,
-     "desc": "Public JSON search. Optional subreddit filter."},
-    {"key": "hackernews", "name": "Hacker News", "live": True,
-     "desc": "Stories and comments via the Algolia index."},
+    {"key": "all_feeds", "name": "All configured feeds", "live": True, "group": "News",
+     "desc": "Sweeps every fixed newsroom feed in sources.json at once."},
     {"key": "rss", "name": "RSS / Atom feed", "live": True, "needs_url": True,
-     "desc": "Any feed URL, including per-site and per-channel feeds."},
+     "group": "News", "desc": "Any feed URL, including per-site and per-channel feeds."},
+    {"key": "article", "name": "Article extractor", "live": True, "needs_url": True,
+     "group": "News", "cap": "trafilatura",
+     "desc": "Pulls the clean article body from a news page, dropping nav and ads."},
     {"key": "page", "name": "Web page", "live": True, "needs_url": True,
-     "desc": "Pull readable text blocks from a public page."},
-    {"key": "youtube", "name": "YouTube channel", "live": True,
-     "desc": "Per-channel Atom feed. Needs a channel ID."},
-    {"key": "nitter", "name": "X via Nitter mirror", "live": False,
+     "group": "News", "desc": "Pull readable text blocks from a public page."},
+
+    {"key": "reddit", "name": "Reddit", "live": True, "group": "Social",
+     "desc": "Public JSON search with an RSS fallback. Optional subreddit filter."},
+    {"key": "praw", "name": "Reddit (API)", "live": True, "group": "Social",
+     "cap": "praw",
+     "desc": "Authenticated Reddit. Avoids the datacenter-IP blocks entirely."},
+    {"key": "hackernews", "name": "Hacker News", "live": True, "group": "Social",
+     "desc": "Stories and comments via the Algolia index."},
+    {"key": "mastodon", "name": "Mastodon", "live": True, "group": "Social",
+     "desc": "Public hashtag timeline from any instance. No key needed."},
+    {"key": "lemmy", "name": "Lemmy", "live": True, "group": "Social",
+     "desc": "Fediverse link aggregator. Open search API."},
+    {"key": "telegram", "name": "Telegram channel", "live": True, "needs_url": True,
+     "group": "Social", "cap": "telethon",
+     "desc": "Public channel history. Falls back to the web preview without a key."},
+    {"key": "tweepy", "name": "X (API)", "live": True, "group": "Social",
+     "cap": "tweepy",
+     "desc": "Official X API. Requires a paid tier; there is no free search."},
+    {"key": "instagram_api", "name": "Instagram profile", "live": True,
+     "needs_url": True, "group": "Social", "cap": "instaloader",
+     "desc": "Public profile posts. Rate-limited hard by Instagram."},
+    {"key": "nitter", "name": "X via Nitter mirror", "live": False, "group": "Social",
      "desc": "Tries volunteer mirrors; often all offline."},
     {"key": "teddit", "name": "Reddit via Teddit mirror", "live": False,
-     "desc": "Fallback when Reddit rate-limits."},
-    {"key": "x", "name": "X (Twitter)", "live": False,
+     "group": "Social", "desc": "Fallback when Reddit rate-limits."},
+
+    {"key": "video", "name": "Video metadata", "live": True, "group": "Media",
+     "cap": "yt_dlp",
+     "desc": "Titles, descriptions and channels from YouTube, TikTok and more."},
+    {"key": "youtube", "name": "YouTube channel feed", "live": True, "group": "Media",
+     "desc": "Per-channel Atom feed. Needs a channel ID."},
+    {"key": "browser", "name": "Rendered page", "live": True, "needs_url": True,
+     "group": "Media", "cap": "playwright",
+     "desc": "Runs a real browser for pages that render nothing server-side."},
+
+    {"key": "wikipedia", "name": "Wikipedia", "live": True, "group": "Reference",
+     "desc": "Articles mentioning the subject, most recently edited first."},
+    {"key": "pastes", "name": "Paste sites", "live": False, "group": "Reference",
+     "desc": "Dork for leaked data on pastebin and friends. Opens the search."},
+
+    {"key": "x", "name": "X (Twitter)", "live": False, "group": "Login-walled",
      "desc": "Login-walled. Opens the search for manual collection."},
-    {"key": "facebook", "name": "Facebook", "live": False,
+    {"key": "facebook", "name": "Facebook", "live": False, "group": "Login-walled",
      "desc": "Login-walled. Opens the search for manual collection."},
-    {"key": "instagram", "name": "Instagram", "live": False,
+    {"key": "instagram", "name": "Instagram", "live": False, "group": "Login-walled",
      "desc": "Login-walled. Opens the tag page for manual collection."},
-    {"key": "tiktok", "name": "TikTok", "live": False,
+    {"key": "tiktok", "name": "TikTok", "live": False, "group": "Login-walled",
      "desc": "Login-walled. Opens the search for manual collection."},
-    {"key": "linkedin", "name": "LinkedIn", "live": False,
+    {"key": "linkedin", "name": "LinkedIn", "live": False, "group": "Login-walled",
      "desc": "Login-walled. Opens the search for manual collection."},
 ]
 
 
-def collect(source_keys, query, options=None, max_workers=6):
-    """Run several collectors in parallel. Returns (posts, per-source report)."""
+def source_meta():
+    """SOURCE_META with live capability status folded in."""
+    out = []
+    for s in SOURCE_META:
+        row = dict(s)
+        cap = s.get("cap")
+        if cap:
+            info = capabilities.probe(cap)
+            row["available"] = info["available"]
+            row["cap_label"] = info.get("label", cap)
+            row["cap_reason"] = info.get("reason", "")
+            row["cap_needs"] = info.get("needs")
+            row["cap_caveat"] = info.get("caveat")
+        else:
+            row["available"] = True
+        out.append(row)
+    return out
+
+
+def collect(source_keys, query, options=None, max_workers=8, since=None):
+    """Run several collectors in parallel. Returns (posts, per-source report).
+
+    `since` is a naive UTC datetime applied to every collector that supports
+    narrowing at the source, so a "last 7 days" run does not pull and discard
+    a year of archive.
+    """
     options = options or {}
     report, posts = [], []
     started = time.time()
+
+    def opts_for(key):
+        base = {k: v for k, v in options.items() if not isinstance(v, dict)}
+        base.update(options.get(key) or {})
+        if since is not None:
+            base.setdefault("since", since)
+        return base
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {}
@@ -556,23 +1436,41 @@ def collect(source_keys, query, options=None, max_workers=6):
             if not fn:
                 report.append({"source": key, "ok": False, "count": 0,
                                "note": "Unknown source", "blocked": False,
-                               "manual_url": ""})
+                               "manual_url": "", "elapsed": 0})
                 continue
-            futures[pool.submit(fn, query, options.get(key, options))] = key
+            futures[pool.submit(_timed, fn, query, opts_for(key))] = key
 
         for future in as_completed(futures):
             key = futures[future]
             try:
-                r = future.result()
-            except Exception as e:  # a collector should never take the run down
-                r = _result(False, note="Collector failed: %s" % type(e).__name__)
+                r, elapsed = future.result()
+            except Exception as e:  # a collector must never take the run down
+                r, elapsed = _result(False, note="Collector failed: %s"
+                                                 % type(e).__name__), 0
             for p in r["posts"]:
                 p.setdefault("source", key)
             posts.extend(r["posts"])
             report.append({"source": key, "ok": r["ok"], "count": len(r["posts"]),
                            "note": r["note"], "blocked": r["blocked"],
-                           "manual_url": r["manual_url"]})
+                           "manual_url": r["manual_url"],
+                           "elapsed": round(elapsed, 2)})
 
     report.sort(key=lambda r: (not r["ok"], r["source"]))
     return posts, {"sources": report, "elapsed": round(time.time() - started, 2),
-                   "total": len(posts)}
+                   "total": len(posts),
+                   "ok_sources": sum(1 for r in report if r["ok"]),
+                   "failed_sources": sum(1 for r in report if not r["ok"])}
+
+
+def _timed(fn, query, opts):
+    """Run one collector, returning its result and how long it took.
+
+    Per-source timing is what tells an analyst which source is slowing a run,
+    instead of only seeing one total.
+    """
+    t0 = time.time()
+    try:
+        return fn(query, opts), time.time() - t0
+    except Exception as e:
+        return (_result(False, note="Collector failed: %s" % type(e).__name__),
+                time.time() - t0)

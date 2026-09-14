@@ -13,19 +13,14 @@
 
     <input type="text" id="graphTitle" class="form-control"
            style="max-width:280px;"
-           value="{{ graph.title if graph else 'Untitled Map' }}"
+           value="Untitled Map"
            placeholder="Map title…">
 
     <select id="graphProfileId" class="form-select" style="max-width:200px;">
       <option value="">— No profile —</option>
-      {% for p in profiles %}
-      <option value="{{ p.id }}" {% if graph and graph.profile_id == p.id %}selected{% endif %}>
-        {{ p.codename }}
-      </option>
-      {% endfor %}
     </select>
 
-    <input type="hidden" id="graphId" value="{{ graph.id if graph else '' }}">
+    <input type="hidden" id="graphId" value="">
 
     <div class="d-flex gap-2 ms-auto align-items-center">
       <span class="graph-count-badge" id="graphCountBadge"></span>
@@ -115,10 +110,8 @@
   </div>
 </div>
 
-<!-- Graph data for JS -->
-<script id="graphDataRaw" type="application/json">
-{{ (graph.graph_json if graph else '{"nodes":[],"edges":[]}') | safe }}
-</script>
+<!-- The graph itself is read from IndexedDB by linkmap.js, using ?id= -->
+<script id="graphDataRaw" type="application/json">{"nodes":[],"edges":[]}</script>
 {% endblock %}
 
 {% block scripts %}

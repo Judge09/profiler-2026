@@ -1,17 +1,22 @@
 /* Signal Monitor — watch workspace.
  *
- * Scoring happens server-side; this file renders results, handles triage,
- * and drives collection. State lives in `state`, and render() is the single
- * path that paints the list.
+ * Scoring happens server-side and is cached there; this file renders results,
+ * handles triage, and drives collection.
+ *
+ * Filtering, searching, sorting and paging are all server-side too: `state`
+ * holds the query, `fetchPage()` asks for one page, and `render()` paints it.
+ * That keeps a watch with thousands of posts as responsive as an empty one.
  */
 (function () {
   'use strict';
 
   const WATCH = window.MONITOR.watchId;
-  const PROFILES = window.MONITOR.profiles;
   const STATUSES = window.MONITOR.statuses;
   const DEFAULT_WEIGHTS = window.MONITOR.defaultWeights;
-  const API = '/monitor';
+
+  // Filled from IndexedDB during boot(). Nothing renders before that.
+  let watch = null;
+  let PROFILES = [];
 
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -26,14 +31,35 @@
     ok: { label: 'Likely authentic', color: 'var(--green)' },
   };
 
+  // `query` is exactly what goes to the server; everything else is local UI.
   const state = {
-    posts: [], counts: { bad: 0, warn: 0, ok: 0 },
-    filter: 'all', sort: 'risk', q: '',
-    open: new Set(), selected: new Set(), ai: {},
+    posts: [],
+    counts: window.MONITOR.counts || { bad: 0, warn: 0, ok: 0 },
+    query: {
+      page: 1,
+      per_page: window.MONITOR.pageSize || 25,
+      verdict: 'all',
+      status: '',
+      platform: '',
+      days: '',
+      q: '',
+      sort: 'risk',
+      types: '',
+    },
+    meta: { pages: 1, matching: 0, total: 0, platforms: [] },
+    open: new Set(),
+    selected: new Set(),
+    ai: {},
+    keywords: window.MONITOR.keywords || {
+      required: [], optional: [], excluded: [], match_mode: 'all',
+    },
+    loading: false,
   };
 
+  // Only used for the few endpoints that are genuinely server-side concerns
+  // (capability report, AI second opinion, vault status).
   async function api(path, opts) {
-    const res = await fetch(API + path, Object.assign({
+    const res = await fetch('/monitor' + path, Object.assign({
       headers: { 'Content-Type': 'application/json' },
     }, opts || {}));
     let data = {};
@@ -41,6 +67,130 @@
     if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ')'));
     return data;
   }
+
+  /* ── Keyword editor ───────────────────────────────────────────────────── */
+
+  const BUCKETS = {
+    required: { key: 'required', el: 'kwReq', input: 'kwReqInput' },
+    optional: { key: 'optional', el: 'kwOpt', input: 'kwOptInput' },
+    excluded: { key: 'excluded', el: 'kwExc', input: 'kwExcInput' },
+  };
+
+  function renderChips() {
+    Object.values(BUCKETS).forEach((b) => {
+      const host = $('#' + b.el);
+      if (!host) return;
+      const terms = state.keywords[b.key] || [];
+      host.innerHTML = terms.length ? terms.map((t, i) =>
+        '<span class="mon-chip" data-bucket="' + b.key + '" data-i="' + i + '">' +
+        '<span class="t">' + esc(t) + '</span>' +
+        '<button type="button" class="x" title="Remove" aria-label="Remove ' + esc(t) + '">&times;</button>' +
+        '</span>').join('')
+        : '<span class="mon-chip-empty">none</span>';
+    });
+    const mode = state.keywords.match_mode || 'all';
+    $$('.mon-kw-mode button').forEach((b) =>
+      b.classList.toggle('on', b.dataset.mode === mode));
+    const hint = $('#kwReqHint');
+    if (hint) {
+      hint.textContent = mode === 'all'
+        ? 'every one must appear'
+        : 'at least one must appear';
+    }
+  }
+
+  function addTerm(bucket, raw) {
+    const term = String(raw || '').trim().replace(/,+$/, '');
+    if (!term) return false;
+    const list = state.keywords[bucket] || (state.keywords[bucket] = []);
+    if (list.some((t) => t.toLowerCase() === term.toLowerCase())) return false;
+    list.push(term);
+    return true;
+  }
+
+  function wireKeywordEditor() {
+    if (!$('#kwEditor')) return;
+
+    Object.values(BUCKETS).forEach((b) => {
+      const input = $('#' + b.input);
+      if (!input) return;
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ',') {
+          e.preventDefault();
+          // Paste of a comma list adds every term at once.
+          const added = input.value.split(',').map((t) => addTerm(b.key, t))
+            .some(Boolean);
+          if (added) { input.value = ''; renderChips(); previewTopic(); }
+        } else if (e.key === 'Backspace' && !input.value) {
+          const list = state.keywords[b.key] || [];
+          if (list.length) { list.pop(); renderChips(); previewTopic(); }
+        }
+      });
+      // Losing focus should not silently discard what was typed.
+      input.addEventListener('blur', () => {
+        if (input.value.trim() && addTerm(b.key, input.value)) {
+          input.value = '';
+          renderChips();
+          previewTopic();
+        }
+      });
+    });
+
+    $('#kwEditor').addEventListener('click', (e) => {
+      const x = e.target.closest('.mon-chip .x');
+      if (x) {
+        const chip = x.closest('.mon-chip');
+        const list = state.keywords[chip.dataset.bucket] || [];
+        list.splice(parseInt(chip.dataset.i, 10), 1);
+        renderChips();
+        previewTopic();
+        return;
+      }
+      const mode = e.target.closest('.mon-kw-mode button');
+      if (mode) {
+        state.keywords.match_mode = mode.dataset.mode;
+        renderChips();
+        previewTopic();
+      }
+    });
+
+    renderChips();
+  }
+
+  const previewTopic = debounce(async () => {
+    const el = $('#topicPreview');
+    if (!el) return;
+    try {
+      const t = await Data.keywords({
+        kw_required: (state.keywords.required || []).join('\n'),
+        kw_optional: (state.keywords.optional || []).join('\n'),
+        kw_excluded: (state.keywords.excluded || []).join('\n'),
+        kw_match_mode: state.keywords.match_mode || 'all',
+        subject: $('#f-subject') ? $('#f-subject').value : '',
+      });
+      let html = '';
+      if (t.warning) {
+        html += '<div style="color:var(--yellow)"><i class="fa fa-triangle-exclamation me-1"></i>' +
+          esc(t.warning) + '</div>';
+      }
+      if (t.required.length) {
+        const joiner = t.match_mode === 'all' ? ' and ' : ' or ';
+        html += '<div>On-topic when it mentions ' +
+          t.required.map((a) => '<span class="mon-kbd" style="color:var(--accent)">' + esc(a) + '</span>').join(joiner) +
+          '</div>';
+      }
+      if (t.excluded.length) {
+        html += '<div>Rejected if it mentions ' +
+          t.excluded.map((a) => '<span class="mon-kbd" style="color:var(--red)">' + esc(a) + '</span>').join(' or ') +
+          '</div>';
+      }
+      if (t.query) {
+        html += '<div class="mt-1" style="opacity:.75">Search: <code style="font-size:11px">' +
+          esc(t.query) + '</code></div>';
+      }
+      el.innerHTML = html;
+    } catch (e) { el.textContent = ''; }
+  }, 350);
 
   /* ── Settings ─────────────────────────────────────────────────────────── */
 
@@ -65,7 +215,10 @@
   function settingsPayload() {
     return {
       subject: $('#f-subject').value,
-      keywords: $('#f-keywords').value,
+      kw_required: (state.keywords.required || []).join('\n'),
+      kw_optional: (state.keywords.optional || []).join('\n'),
+      kw_excluded: (state.keywords.excluded || []).join('\n'),
+      kw_match_mode: state.keywords.match_mode || 'all',
       profile_id: $('#f-profile').value || null,
       mode_release: $('#m-release').checked,
       mode_hunter: $('#m-hunter').checked,
@@ -81,9 +234,11 @@
 
   async function applySettings(quiet) {
     try {
-      await api('/' + WATCH + '/update', {
-        method: 'POST', body: JSON.stringify(settingsPayload()),
-      });
+      Object.assign(watch, settingsPayload());
+      await Data.saveWatch(watch);
+      state.query.page = 1;
+      // Changing the rules invalidates every score; ensureFresh (inside
+      // refresh) recomputes exactly the posts affected.
       await refresh();
       if (!quiet) showToast('Rescored with the new settings', 'success');
     } catch (e) {
@@ -94,11 +249,41 @@
   /* ── Data ─────────────────────────────────────────────────────────────── */
 
   async function refresh() {
-    const data = await api('/' + WATCH + '/results');
-    state.posts = data.posts;
-    state.counts = data.counts;
+    state.loading = true;
+    paintLoading();
+    try {
+      const data = await Data.results(watch, state.query);
+      state.posts = data.posts;
+      state.counts = data.counts;
+      state.meta = {
+        pages: data.pages, matching: data.matching, total: data.total,
+        page: data.page, per_page: data.per_page,
+        has_next: data.has_next, has_prev: data.has_prev,
+        platforms: data.platforms || [],
+      };
+      state.query.page = data.page;
+    } catch (e) {
+      showToast(e.message, 'danger');
+    } finally {
+      state.loading = false;
+    }
     render();
     renderBriefing();
+  }
+
+  function paintLoading() {
+    const list = $('#list');
+    if (list && !state.posts.length) {
+      list.innerHTML = '<div class="mon-empty"><i class="fa fa-spinner fa-spin me-2"></i>Loading…</div>';
+    }
+  }
+
+  // Jump to page 1 whenever a filter changes, since the current page number
+  // is meaningless against a different result set.
+  function setFilter(patch) {
+    Object.assign(state.query, patch, { page: 1 });
+    state.selected.clear();
+    refresh();
   }
 
   /* ── Rendering ────────────────────────────────────────────────────────── */
@@ -286,14 +471,17 @@
   }
 
   function render() {
-    const c = state.counts, total = state.posts.length;
+    const c = state.counts;
+    const total = state.meta.total || 0;
+    const m = state.meta;
 
     $('#sumTitle').textContent = !total ? 'No posts yet'
       : c.bad ? c.bad + (c.bad === 1 ? ' post needs' : ' posts need') + ' action now'
       : c.warn ? c.warn + (c.warn === 1 ? ' post needs' : ' posts need') + ' a closer look'
       : 'Nothing flagged';
     $('#scanMeta').textContent = total
-      ? 'Scored ' + total + ' post' + (total === 1 ? '' : 's') + ' at ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '.'
+      ? 'Scored ' + total + ' post' + (total === 1 ? '' : 's') + ' at ' +
+        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '.'
       : 'Collect posts live, add one by hand, or import a batch.';
 
     const dist = $('#dist');
@@ -306,31 +494,108 @@
     $('#legend').innerHTML = [
       ['all', 'All', total, null], ['bad', VERD.bad.label, c.bad, VERD.bad.color],
       ['warn', VERD.warn.label, c.warn, VERD.warn.color], ['ok', VERD.ok.label, c.ok, VERD.ok.color],
-    ].map(([k, l, n, col]) => '<button data-filter="' + k + '" aria-pressed="' + (state.filter === k) + '">' +
+    ].map(([k, l, n, col]) => '<button data-filter="' + k + '" aria-pressed="' + (state.query.verdict === k) + '">' +
       (col ? '<i style="background:' + col + '"></i>' : '') + l + ' <b>' + n + '</b></button>').join('');
 
-    const q = state.q.toLowerCase();
-    let list = state.posts.filter((p) => {
-      const okFilter = state.filter === 'all' || p.analysis.verdict === state.filter;
-      // Search covers threat types and status too, so briefing chips can filter.
-      const hay = (p.author + ' ' + p.handle + ' ' + p.text + ' ' + p.platform + ' ' +
-        (p.analysis.types || []).join(' ') + ' ' + (p.status || '')).toLowerCase();
-      return okFilter && (!q || hay.indexOf(q) !== -1);
-    });
+    // Platform dropdown reflects what is actually in this watch.
+    const psel = $('#platformSel');
+    if (psel && m.platforms) {
+      const cur = state.query.platform;
+      psel.innerHTML = '<option value="">All platforms</option>' +
+        m.platforms.map((p) => '<option value="' + esc(p.platform) + '"' +
+          (cur === p.platform ? ' selected' : '') + '>' + esc(p.platform) +
+          ' (' + p.count + ')</option>').join('');
+    }
 
-    const bySort = {
-      risk: (x, y) => y.analysis.score - x.analysis.score,
-      recent: (x, y) => String(y.posted_at || y.collected_at).localeCompare(String(x.posted_at || x.collected_at)),
-      platform: (x, y) => x.platform.localeCompare(y.platform) || y.analysis.score - x.analysis.score,
-      status: (x, y) => String(x.status).localeCompare(String(y.status)) || y.analysis.score - x.analysis.score,
-    };
-    list.sort((x, y) => (y.pinned - x.pinned) || bySort[state.sort](x, y));
+    $('#list').innerHTML = state.posts.length
+      ? state.posts.map(card).join('')
+      : '<div class="mon-empty">' + (total
+          ? 'No posts match this view. <button class="btn btn-ghost btn-xs" id="btnClearInline">Clear filters</button>'
+          : 'No posts yet. Collect some above.') + '</div>';
 
-    $('#list').innerHTML = list.length ? list.map(card).join('')
-      : '<div class="mon-empty">' + (total ? 'No posts match this view.' : 'No posts yet. Collect some above.') + '</div>';
+    renderMeta();
+    renderPager();
 
     $('#selCount').textContent = state.selected.size;
     $('#bulkBar').style.display = state.selected.size ? '' : 'none';
+  }
+
+  function renderMeta() {
+    const m = state.meta;
+    const el = $('#resultMeta');
+    if (!el) return;
+    if (!m.matching) { el.textContent = ''; return; }
+    const from = (m.page - 1) * m.per_page + 1;
+    const to = Math.min(m.page * m.per_page, m.matching);
+    const filtered = m.matching !== m.total;
+    el.innerHTML = 'Showing <b>' + from + '–' + to + '</b> of <b>' + m.matching + '</b>' +
+      (filtered ? ' matching (of ' + m.total + ' total)' : ' posts') +
+      ' · page ' + m.page + ' of ' + m.pages;
+  }
+
+  // A windowed pager: first, last, and a few either side of the current page.
+  function renderPager() {
+    const el = $('#pager');
+    if (!el) return;
+    const { page, pages } = state.meta;
+    if (!pages || pages <= 1) { el.innerHTML = ''; return; }
+
+    const nums = new Set([1, pages, page, page - 1, page + 1, page - 2, page + 2]);
+    const list = Array.from(nums).filter((n) => n >= 1 && n <= pages).sort((a, b) => a - b);
+
+    let html = '<button data-page="' + (page - 1) + '"' + (page <= 1 ? ' disabled' : '') +
+      ' aria-label="Previous page"><i class="fa fa-chevron-left"></i></button>';
+    let prev = 0;
+    list.forEach((n) => {
+      if (prev && n - prev > 1) html += '<span class="gap">…</span>';
+      html += '<button data-page="' + n + '"' + (n === page ? ' class="on" aria-current="page"' : '') +
+        '>' + n + '</button>';
+      prev = n;
+    });
+    html += '<button data-page="' + (page + 1) + '"' + (page >= pages ? ' disabled' : '') +
+      ' aria-label="Next page"><i class="fa fa-chevron-right"></i></button>';
+    el.innerHTML = html;
+  }
+
+  function goToPage(n) {
+    const p = Math.max(1, Math.min(state.meta.pages || 1, n));
+    if (p === state.query.page) return;
+    state.query.page = p;
+    refresh().then(() => {
+      const top = document.getElementById('list');
+      if (top) top.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    const pg = e.target.closest('#pager [data-page]');
+    if (pg && !pg.disabled) {
+      goToPage(parseInt(pg.dataset.page, 10));
+      return;
+    }
+    if (e.target.closest('#btnClearInline')) {
+      resetFilters();
+    }
+  });
+
+  // Left/right arrows page through results when not typing in a field.
+  document.addEventListener('keydown', (e) => {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || '')) ||
+        e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'ArrowRight' && state.meta.has_next) goToPage(state.query.page + 1);
+    if (e.key === 'ArrowLeft' && state.meta.has_prev) goToPage(state.query.page - 1);
+  });
+
+  function resetFilters() {
+    Object.assign(state.query, {
+      page: 1, verdict: 'all', status: '', platform: '', days: '', q: '', types: '',
+    });
+    const q = $('#q'); if (q) q.value = '';
+    ['statusSel', 'platformSel', 'daysSel'].forEach((id) => {
+      const el = $('#' + id); if (el) el.value = '';
+    });
+    state.selected.clear();
+    refresh();
   }
 
   /* ── Briefing ─────────────────────────────────────────────────────────── */
@@ -345,7 +610,7 @@
     const el = $('#briefing');
     if (!el) return;
     let b;
-    try { b = await api('/' + WATCH + '/briefing'); }
+    try { b = await Data.briefing(watch); }
     catch (e) { el.innerHTML = ''; return; }
     state.briefing = b;
 
@@ -422,6 +687,18 @@
           esc(g) + '</span></div>').join('') + '</div>');
     }
 
+    // An empty watch has nothing to brief on, and a 345px panel of zeroes
+    // pushes the collection controls off a 720px screen -- which is the first
+    // thing someone needs on a watch with no posts. Collapse to one line until
+    // there is something to say.
+    if (!b.total) {
+      el.innerHTML = '<div class="mon-brief empty"><div class="mon-brief-head">' +
+        '<h3>Nothing collected yet</h3><span class="meta">' +
+        'Pick your sources below and collect, or add a post by hand.' +
+        '</span></div></div>';
+      return;
+    }
+
     el.innerHTML = '<div class="mon-brief">' +
       '<div class="mon-brief-head">' +
         '<h3>' + esc(b.headline) + '</h3>' +
@@ -470,7 +747,11 @@
         : (f === 'profile_id' && el.value === '') ? null : el.value;
     });
     try {
-      await api('/posts/' + id, { method: 'PATCH', body: JSON.stringify(body) });
+      // Blank number fields mean "no override", not zero.
+      if (body.manual_score != null && body.manual_score !== '') {
+        body.manual_score = Math.max(0, Math.min(100, parseInt(body.manual_score, 10) || 0));
+      }
+      await Data.updatePost(id, body);
       await refresh();
       showToast('Saved', 'success', 1500);
     } catch (e) { showToast(e.message, 'danger'); }
@@ -504,11 +785,14 @@
       savePost(id, article);
     } else if (act === 'remove') {
       if (!await confirmModal('Remove this post from the watch?', 'Remove')) return;
-      try { await api('/posts/' + id, { method: 'DELETE' }); state.open.delete(id); state.selected.delete(id); await refresh(); }
-      catch (err) { showToast(err.message, 'danger'); }
+      try {
+        await Data.deletePost(id);
+        state.open.delete(id); state.selected.delete(id);
+        await refresh();
+      } catch (err) { showToast(err.message, 'danger'); }
     } else if (act === 'pin') {
       const p = state.posts.find((x) => x.id === id);
-      try { await api('/posts/' + id, { method: 'PATCH', body: JSON.stringify({ pinned: !p.pinned }) }); await refresh(); }
+      try { await Data.updatePost(id, { pinned: !p.pinned }); await refresh(); }
       catch (err) { showToast(err.message, 'danger'); }
     } else if (act === 'ai') {
       askClaude(id);
@@ -516,8 +800,24 @@
       const p = state.posts.find((x) => x.id === id);
       if (!p.profile_id) { showToast('Link this post to a profile first', 'warning'); return; }
       try {
-        await api('/posts/' + id + '/push-note', { method: 'POST', body: JSON.stringify({ profile_id: p.profile_id }) });
-        showToast('Added to ' + p.profile_codename + "'s intel notes", 'success');
+        const prof = await Store.get('profiles', p.profile_id);
+        const a = p.analysis || {};
+        const score = p.manual_score != null ? p.manual_score : p.score;
+        const lines = [
+          '[Signal Monitor] ' + p.author + ' on ' + p.platform,
+          'Risk ' + score + '/100 - ' + (p.verdict_label || '') +
+            ((p.types || []).length ? ' - ' + p.types.join(', ') : ''),
+          '', (p.text || '').slice(0, 1500),
+        ];
+        if (p.url) lines.push('', 'Link: ' + p.url);
+        if (p.analyst_note) lines.push('', 'Analyst note: ' + p.analyst_note);
+        await Store.put('notes', {
+          profile_id: p.profile_id, content: lines.join('\n'),
+          source: 'Signal Monitor / ' + watch.name,
+          created_at: new Date().toISOString().slice(0, 19),
+        });
+        showToast('Added to ' + ((prof && prof.codename) || 'the profile') +
+                  "'s intel notes", 'success');
       } catch (err) { showToast(err.message, 'danger'); }
     }
   });
@@ -526,12 +826,17 @@
 
   async function bulk(action, value) {
     try {
-      const data = await api('/' + WATCH + '/posts/bulk', {
-        method: 'POST',
-        body: JSON.stringify({ ids: Array.from(state.selected), action, value }),
-      });
-      showToast(data.affected + ' post(s) updated', 'success');
-      if (action === 'delete') state.selected.clear();
+      const ids = Array.from(state.selected);
+      const affected = await Data.bulk(WATCH, ids, action, value);
+      const data = { affected };
+      showToast(affected + ' post(s) updated', 'success');
+      if (action === 'delete') {
+        state.selected.clear();
+        // Deleting the last row of a page would otherwise leave it empty.
+        if (state.posts.length === data.affected && state.query.page > 1) {
+          state.query.page -= 1;
+        }
+      }
       await refresh();
     } catch (e) { showToast(e.message, 'danger'); }
   }
@@ -544,15 +849,28 @@
     bulk('delete');
   });
   $('#bulkDeselect').addEventListener('click', () => { state.selected.clear(); render(); });
+  const bulkPage = $('#bulkSelectPage');
+  if (bulkPage) {
+    bulkPage.addEventListener('click', () => {
+      state.posts.forEach((p) => state.selected.add(p.id));
+      render();
+    });
+  }
 
   /* ── Filters ──────────────────────────────────────────────────────────── */
 
   $('#legend').addEventListener('click', (e) => {
     const b = e.target.closest('[data-filter]');
-    if (b) { state.filter = b.dataset.filter; render(); }
+    if (b) setFilter({ verdict: b.dataset.filter });
   });
-  $('#q').addEventListener('input', debounce((e) => { state.q = e.target.value; render(); }, 150));
-  $('#sortSel').addEventListener('change', (e) => { state.sort = e.target.value; render(); });
+  $('#q').addEventListener('input', debounce((e) => setFilter({ q: e.target.value }), 300));
+  $('#sortSel').addEventListener('change', (e) => setFilter({ sort: e.target.value }));
+  $('#platformSel').addEventListener('change', (e) => setFilter({ platform: e.target.value }));
+  $('#statusSel').addEventListener('change', (e) => setFilter({ status: e.target.value }));
+  $('#daysSel').addEventListener('change', (e) => setFilter({ days: e.target.value }));
+  $('#perPageSel').addEventListener('change', (e) =>
+    setFilter({ per_page: parseInt(e.target.value, 10) || 25 }));
+  $('#btnResetFilters').addEventListener('click', resetFilters);
 
   /* ── Mode toggles and settings ────────────────────────────────────────── */
 
@@ -569,30 +887,10 @@
   wireToggle('m-release', 'tog-release');
   wireToggle('m-hunter', 'tog-hunter');
 
-  // Show what the keywords actually scope to, as they are typed.
-  const previewTopic = debounce(async () => {
-    const el = $('#topicPreview');
-    if (!el) return;
-    try {
-      const t = await api('/' + WATCH + '/topic?keywords=' +
-        encodeURIComponent($('#f-keywords').value) +
-        '&subject=' + encodeURIComponent($('#f-subject').value));
-      if (t.warning) {
-        el.innerHTML = '<span style="color:var(--yellow)"><i class="fa fa-triangle-exclamation me-1"></i>' +
-          esc(t.warning) + '</span>';
-        return;
-      }
-      el.innerHTML = 'On-topic if it mentions ' +
-        t.anchors.map((a) => '<span class="mon-kbd" style="color:var(--accent)">' + esc(a) + '</span>').join(' or ') +
-        (t.generic.length ? ' · broadened by ' +
-          t.generic.map((g) => '<span class="mon-kbd">' + esc(g) + '</span>').join(' ') : '');
-    } catch (e) { el.textContent = ''; }
-  }, 400);
-  ['f-keywords', 'f-subject'].forEach((id) => {
-    const el = $('#' + id);
-    if (el) el.addEventListener('input', previewTopic);
-  });
-  previewTopic();
+  // The keyword editor owns its own preview; wire the subject into it too.
+  // The initial paint happens in boot(), once the watch has been loaded.
+  wireKeywordEditor();
+  if ($('#f-subject')) $('#f-subject').addEventListener('input', previewTopic);
 
   $('#btnApply').addEventListener('click', () => applySettings(false));
   $('#weightGrid').addEventListener('input', markChangedWeights);
@@ -601,12 +899,11 @@
     markChangedWeights();
     applySettings(false);
   });
-  markChangedWeights();
-
   $('#btnDeleteWatch').addEventListener('click', async () => {
-    if (!await confirmModal('Delete this watch and every post in it?', 'Delete watch')) return;
-    await api('/' + WATCH + '/delete', { method: 'POST' });
-    window.location = API + '/';
+    if (!await confirmModal('Delete this watch and every post in it? This ' +
+        'removes them from this browser and cannot be undone.', 'Delete watch')) return;
+    await Data.deleteWatch(WATCH);
+    window.location = '/monitor/';
   });
 
   /* ── Collection ───────────────────────────────────────────────────────── */
@@ -615,39 +912,139 @@
     return $$('.mon-src-item.on').map((el) => el.dataset.src);
   }
 
-  $('#srcGrid').addEventListener('click', (e) => {
-    const item = e.target.closest('.mon-src-item');
-    if (!item) return;
-    item.classList.toggle('on');
+  function syncUrlField() {
     const needsUrl = selectedSources().some((k) => {
       const el = document.querySelector('.mon-src-item[data-src="' + k + '"]');
       return el && el.dataset.needsurl === '1';
     });
     $('#urlFields').style.display = needsUrl ? '' : 'none';
+  }
+
+  // The collapsed summary has to say what is selected, or it just hides the
+  // setting rather than tidying it.
+  function syncSourceSummary() {
+    const on = $$('.mon-src-item.on');
+    const count = $('#srcCount');
+    const names = $('#srcNames');
+    const summary = $('#srcToggle');
+    if (!count || !names || !summary) return;
+
+    count.textContent = on.length + ' selected';
+    summary.classList.toggle('none-selected', on.length === 0);
+
+    if (!on.length) {
+      names.textContent = 'none — pick at least one to collect';
+    } else {
+      const labels = on.map((el) => el.dataset.name || el.dataset.src);
+      names.textContent = labels.slice(0, 4).join(', ') +
+        (labels.length > 4 ? ' +' + (labels.length - 4) + ' more' : '');
+    }
+    syncUrlField();
+  }
+
+  function setSource(el, on) {
+    el.classList.toggle('on', on);
+    el.setAttribute('aria-checked', on ? 'true' : 'false');
+  }
+
+  const PRESETS = {
+    news: (el) => el.dataset.group === 'News' && el.dataset.available === '1',
+    social: (el) => el.dataset.group === 'Social' && el.dataset.available === '1',
+    // Everything that fetches without a key or a login.
+    open: (el) => el.dataset.live === '1' && el.dataset.available === '1' &&
+                  el.dataset.needsurl !== '1',
+    none: () => false,
+  };
+
+  const srcToggle = $('#srcToggle');
+  if (srcToggle) {
+    srcToggle.addEventListener('click', () => {
+      const body = $('#srcBody');
+      const open = body.hidden;
+      body.hidden = !open;
+      srcToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
+
+  // Selecting sources. An unavailable source stays selectable: it reports why
+  // it could not run, which is more useful than an inert tile.
+  document.addEventListener('click', (e) => {
+    const preset = e.target.closest('[data-preset]');
+    if (preset) {
+      e.preventDefault();
+      const test = PRESETS[preset.dataset.preset];
+      $$('.mon-src-item').forEach((el) => setSource(el, !!test && test(el)));
+      syncSourceSummary();
+      return;
+    }
+
+    const all = e.target.closest('[data-group-all]');
+    const none = e.target.closest('[data-group-none]');
+    if (all || none) {
+      e.preventDefault();
+      const host = (all || none).closest('.mon-src-group');
+      host.querySelectorAll('.mon-src-item').forEach((el) => {
+        setSource(el, Boolean(all) && el.dataset.available === '1');
+      });
+      syncSourceSummary();
+      return;
+    }
+
+    const item = e.target.closest('.mon-src-item');
+    if (item) {
+      setSource(item, !item.classList.contains('on'));
+      syncSourceSummary();
+    }
   });
+
+  // Tiles act as checkboxes, so Space and Enter must work on them too.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== ' ' && e.key !== 'Enter') return;
+    const item = e.target.closest && e.target.closest('.mon-src-item');
+    if (!item) return;
+    e.preventDefault();
+    setSource(item, !item.classList.contains('on'));
+    syncSourceSummary();
+  });
+
+  syncSourceSummary();
 
   $$('.sugg').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
-    const kw = $('#f-keywords').value.split(',')[0].trim() || $('#f-subject').value.trim();
+    // Use the first anchor term, falling back to the subject.
+    const kw = (state.keywords.required || [])[0] ||
+      (state.keywords.optional || [])[0] ||
+      ($('#f-subject') ? $('#f-subject').value.trim() : '');
     $('#c-url').value = a.dataset.url.replace('{query}', encodeURIComponent(kw));
   }));
 
   $('#btnCollect').addEventListener('click', async () => {
     const sources = selectedSources();
-    if (!sources.length) { showToast('Pick at least one source', 'warning'); return; }
+    if (!sources.length) {
+      // Open the picker rather than just complaining about it.
+      const body = $('#srcBody');
+      if (body && body.hidden) {
+        body.hidden = false;
+        $('#srcToggle').setAttribute('aria-expanded', 'true');
+        body.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      showToast('Pick at least one source to collect from', 'warning');
+      return;
+    }
     const btn = $('#btnCollect');
     btn.disabled = true;
     btn.innerHTML = '<i class="fa fa-spinner fa-spin me-1"></i> Collecting…';
 
     const limit = parseInt($('#c-limit').value, 10) || 25;
     const url = $('#c-url') ? $('#c-url').value.trim() : '';
+    const days = $('#c-days') ? $('#c-days').value : '';
     const options = { limit };
     sources.forEach((k) => { options[k] = { limit, url }; });
 
     try {
-      const data = await api('/' + WATCH + '/collect', {
-        method: 'POST',
-        body: JSON.stringify({ sources, query: $('#c-query').value.trim(), options }),
+      const data = await Data.collect(watch, sources, {
+        query: $('#c-query').value.trim(), options, days,
+        strict: true,
       });
       const rep = $('#collectReport');
       rep.style.display = '';
@@ -657,12 +1054,19 @@
         return '<div><span class="' + cls + '">' + icon + '</span>' +
           '<span class="src">' + esc(r.source) + '</span>' +
           '<span style="flex:1">' + esc(r.note) + '</span>' +
+          (r.elapsed ? '<span class="ms">' + r.elapsed + 's</span>' : '') +
           (r.manual_url ? '<a href="' + esc(r.manual_url) + '" target="_blank" rel="noopener noreferrer">open search</a>' : '') +
           '</div>';
       }).join('') + '<div style="border:0"><span class="s-ok">→</span><span style="flex:1">' +
-        data.added + ' added, ' + data.skipped + ' duplicate' +
+        '<b>' + data.added + '</b> added, ' + data.skipped + ' duplicate' +
         (data.off_topic ? ', <span class="s-blocked">' + data.off_topic + ' off-topic dropped</span>' : '') +
-        ' · query: ' + esc(data.query) + ' · ' + data.report.elapsed + 's</span></div>';
+        (data.flagged ? ', <b style="color:var(--yellow)">' + data.flagged + ' flagged</b>' : '') +
+        ' · ' + data.report.ok_sources + '/' +
+        (data.report.ok_sources + data.report.failed_sources) + ' sources · ' +
+        data.report.elapsed + 's</span></div>' +
+        '<div style="border:0;opacity:.7"><span></span><span style="flex:1">Query: <code>' +
+        esc(data.query) + '</code></span></div>';
+      state.query.page = 1;
       await refresh();
       showToast(data.added + ' post(s) collected', data.added ? 'success' : 'info');
     } catch (e) {
@@ -674,7 +1078,14 @@
   });
 
   $('#btnDorks').addEventListener('click', async () => {
-    const data = await api('/' + WATCH + '/dorks?q=' + encodeURIComponent($('#c-query').value.trim()));
+    const kw = await Data.keywords(watch);
+    const q = $('#c-query').value.trim() || kw.query;
+    const sites = ['facebook.com', 'x.com', 'twitter.com', 'instagram.com',
+      'tiktok.com', 'reddit.com', 'linkedin.com'];
+    const data = { urls: [{ label: 'All sites',
+      url: 'https://www.google.com/search?q=' + encodeURIComponent(q) }].concat(
+      sites.map((site) => ({ label: site,
+        url: 'https://www.google.com/search?q=' + encodeURIComponent('site:' + site + ' ' + q) }))) };
     $('#dorkList').innerHTML = data.urls.map((u) =>
       '<a class="btn btn-outline btn-sm text-start" href="' + esc(u.url) + '" target="_blank" rel="noopener noreferrer">' +
       '<i class="fa fa-arrow-up-right-from-square me-2"></i>' + esc(u.label) + '</a>').join('');
@@ -704,10 +1115,9 @@
     const post = newPostBody();
     if (!post.text) { $('#np-err').textContent = 'Add some post text to score.'; return; }
     try {
-      const a = await api('/preview', {
-        method: 'POST',
-        body: JSON.stringify({ watch_id: WATCH, watch: settingsPayload(), post }),
-      });
+      const probe = Object.assign({}, watch, settingsPayload());
+      const scored = await Data.scorePosts(probe, [Object.assign({}, post)]);
+      const a = scored[0].analysis;
       $('#np-preview').innerHTML = '<div class="mon-post v-' + a.verdict + '" style="margin:0">' +
         '<div class="mon-top"><div><span class="mon-author">Preview</span></div>' +
         '<div class="mon-score"><b>' + a.score + '</b><span>risk / 100</span></div></div>' +
@@ -721,7 +1131,34 @@
     const post = newPostBody();
     if (!post.author || !post.text) { $('#np-err').textContent = 'Add a display name and the post text.'; return; }
     try {
-      await api('/' + WATCH + '/posts', { method: 'POST', body: JSON.stringify(post) });
+      // Manual adds honour the watch's relevance rules, so say which rule
+      // rejected the post rather than just refusing it.
+      const stats = await Data.addPosts(watch, [post], { source: 'manual' });
+      if (!stats.added) {
+        if (stats.off_topic) {
+          const kw = await Data.keywords(watch, post.text);
+          const why = (kw.sample_result && kw.sample_result.reason) || '';
+          $('#np-err').innerHTML = 'This post is off-topic for the watch' +
+            (why ? ': ' + esc(why) : '') +
+            '. <button type="button" class="btn btn-ghost btn-xs" id="np-force">' +
+            'Add it anyway</button>';
+          const force = $('#np-force');
+          if (force) {
+            force.addEventListener('click', async () => {
+              const forced = await Data.addPosts(watch, [post],
+                { source: 'manual', strict: false });
+              if (forced.added) {
+                addModal.hide();
+                await refresh();
+                showToast('Post added despite being off-topic', 'info');
+              }
+            });
+          }
+        } else {
+          $('#np-err').textContent = 'That post is already in this watch.';
+        }
+        return;
+      }
       ['np-author', 'np-handle', 'np-url', 'np-text'].forEach((i) => { $('#' + i).value = ''; });
       $('#np-verified').checked = false;
       $('#np-preview').innerHTML = '';
@@ -735,10 +1172,15 @@
   $('#btnImport').addEventListener('click', () => { $('#imp-err').textContent = ''; impModal.show(); });
   $('#imp-save').addEventListener('click', async () => {
     try {
-      const data = await api('/' + WATCH + '/import', {
-        method: 'POST',
-        body: JSON.stringify({ payload: $('#imp-text').value, replace: $('#imp-replace').checked }),
-      });
+      let payload;
+      try { payload = JSON.parse($('#imp-text').value); }
+      catch (err) { throw new Error("That isn't valid JSON. Check for missing quotes or commas."); }
+      const arr = Array.isArray(payload) ? payload : (payload && payload.posts);
+      if (!Array.isArray(arr)) {
+        throw new Error('Expected an array of posts, or an object with a posts array.');
+      }
+      if ($('#imp-replace').checked) await Store.deletePostsFor(WATCH);
+      const data = await Data.addPosts(watch, arr, { source: 'import' });
       impModal.hide();
       $('#imp-text').value = '';
       await refresh();
@@ -755,16 +1197,12 @@
     const text = $('#sb-text').value.trim();
     if (!text) { $('#sb-out').innerHTML = ''; return; }
     try {
-      const a = await api('/preview', {
-        method: 'POST',
-        body: JSON.stringify({
-          watch_id: WATCH, watch: settingsPayload(),
-          post: {
-            platform: $('#sb-platform').value, author: $('#sb-author').value,
-            handle: $('#sb-handle').value, text,
-          },
-        }),
-      });
+      const probe = Object.assign({}, watch, settingsPayload());
+      const scored = await Data.scorePosts(probe, [{
+        platform: $('#sb-platform').value, author: $('#sb-author').value,
+        handle: $('#sb-handle').value, text,
+      }]);
+      const a = scored[0].analysis;
       $('#sb-out').innerHTML = '<div class="mon-post v-' + a.verdict + '" style="margin:0">' +
         '<div class="mon-top"><div><span class="mon-author">' + a.verdict_label + '</span>' +
         '<span class="mon-meta">' + (a.types.join(', ') || 'no threat types') + '</span></div>' +
@@ -785,7 +1223,7 @@
       const body = $('#suggestBody');
       body.innerHTML = '<p class="mon-note mb-0">Scanning…</p>';
       try {
-        const data = await api('/' + WATCH + '/suggest-profiles');
+        const data = await suggestProfiles();
         if (!data.suggestions.length) {
           body.innerHTML = '<p class="mon-note mb-0">No profile matches found in the current posts.</p>';
           return;
@@ -808,10 +1246,7 @@
       if (!btn) return;
       const ids = btn.dataset.posts.split(',').map(Number);
       try {
-        await api('/' + WATCH + '/posts/bulk', {
-          method: 'POST',
-          body: JSON.stringify({ ids, action: 'link_profile', value: btn.dataset.linkProfile }),
-        });
+        await Data.bulk(WATCH, ids, 'link_profile', btn.dataset.linkProfile);
         showToast('Linked ' + ids.length + ' post(s)', 'success');
         await refresh();
       } catch (err) { showToast(err.message, 'danger'); }
@@ -821,14 +1256,109 @@
   /* ── Link map ─────────────────────────────────────────────────────────── */
 
   $('#btnLinkmap').addEventListener('click', async () => {
+    let preview, graphs;
     try {
-      const data = await api('/' + WATCH + '/to-linkmap', {
-        method: 'POST', body: JSON.stringify({ min_score: 30 }),
-      });
-      showToast('Built a map with ' + data.nodes + ' nodes', 'success');
-      window.open(data.url, '_blank');
-    } catch (e) { showToast(e.message, 'danger'); }
+      preview = await Data.graph(watch, { min_score: 30 });
+      graphs = (await Store.all('graphs'))
+        .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
+        .slice(0, 20);
+    } catch (e) { showToast(e.message, 'danger'); return; }
+
+    const st = preview.stats;
+    const body = $('#lmBody');
+    body.innerHTML =
+      '<p class="mon-note">Builds an entity graph: accounts, the domains they ' +
+      'link to, where those resolve, and any matching profiles. Accounts sharing ' +
+      'a domain become visible as shared nodes.</p>' +
+      '<div class="row g-2 mb-2">' +
+        '<div class="col-6"><label class="form-label">Minimum risk score</label>' +
+        '<input type="number" class="form-control form-control-sm" id="lm-min" value="30" min="0" max="100"></div>' +
+        '<div class="col-6"><label class="form-label">Add to</label>' +
+        '<select class="form-select form-select-sm" id="lm-graph">' +
+        '<option value="">— new map —</option>' +
+        graphs.map((g) => '<option value="' + g.id + '">' + esc(g.title) + '</option>').join('') +
+        '</select></div>' +
+      '</div>' +
+      '<div class="d-flex gap-3 flex-wrap mb-2" style="font-size:12px">' +
+        '<label><input type="checkbox" id="lm-domains" checked> Include domains</label>' +
+        '<label><input type="checkbox" id="lm-profiles" checked> Include profiles</label>' +
+        '<label><input type="checkbox" id="lm-geo"> Include host locations</label>' +
+      '</div>' +
+      '<div class="mon-note" id="lm-stats">Would draw <b>' + st.nodes + '</b> nodes and <b>' +
+      st.edges + '</b> edges from ' + st.posts + ' post(s); ' + st.skipped + ' below the threshold.</div>';
+
+    const modal = new bootstrap.Modal('#linkmapModal');
+    modal.show();
+
+    $('#lm-build').onclick = async () => {
+      const btn = $('#lm-build');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa fa-spinner fa-spin me-1"></i> Building…';
+      try {
+        const targetId = $('#lm-graph').value ? Number($('#lm-graph').value) : null;
+        const existing = targetId ? await Store.get('graphs', targetId) : null;
+        const res = await Data.graph(watch, {
+          min_score: parseInt($('#lm-min').value, 10) || 0,
+          domains: $('#lm-domains').checked,
+          profiles: $('#lm-profiles').checked,
+          geo: $('#lm-geo').checked,
+          existing: existing ? existing.graph_json : null,
+        });
+        const row = existing || {
+          title: watch.name + ' - Signal Map',
+          profile_id: watch.profile_id || null,
+          created_at: new Date().toISOString().slice(0, 19),
+        };
+        row.graph_json = JSON.stringify(res.graph);
+        row.updated_at = new Date().toISOString().slice(0, 19);
+        const gid = await Store.put('graphs', row);
+        modal.hide();
+        showToast(res.merged
+          ? 'Merged in ' + res.merged.nodes_added + ' new node(s)'
+          : 'Built a map with ' + res.stats.nodes + ' nodes', 'success');
+        window.open('/linkmap/edit?id=' + gid, '_blank');
+      } catch (e) {
+        showToast(e.message, 'danger');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa fa-diagram-project me-1"></i> Build map';
+      }
+    };
   });
+
+  /* ── Capabilities ─────────────────────────────────────────────────────── */
+
+  const btnCaps = $('#btnCaps');
+  if (btnCaps) {
+    btnCaps.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const modal = new bootstrap.Modal('#capsModal');
+      modal.show();
+      const body = $('#capsBody');
+      try {
+        const d = await api('/capabilities');
+        const groups = Object.entries(d.groups || {});
+        body.innerHTML =
+          '<p class="mon-note">' + d.counts.available + ' of ' + d.counts.total +
+          ' optional libraries are usable here' +
+          (d.serverless ? ', and this is a serverless deployment, so anything ' +
+            'needing a browser or a writable disk cannot run' : '') + '.</p>' +
+          groups.map(([name, rows]) =>
+            '<h6 class="mt-3" style="text-transform:capitalize">' + esc(name) + '</h6>' +
+            '<div class="mon-caps">' + rows.map((r) =>
+              '<div class="mon-cap ' + (r.available ? 'on' : 'off') + '">' +
+              '<div class="t"><i class="fa ' + (r.available ? 'fa-circle-check' : 'fa-circle-xmark') +
+              '"></i> ' + esc(r.label) + '<span class="role">' + esc(r.role) + '</span></div>' +
+              '<div class="u">' + esc(r.use) + '</div>' +
+              (r.available ? '' : '<div class="why">' + esc(r.reason) + '</div>') +
+              (r.needs ? '<div class="why">Needs: ' + esc(r.needs) + '</div>' : '') +
+              (r.caveat ? '<div class="why warn">' + esc(r.caveat) + '</div>' : '') +
+              '</div>').join('') + '</div>').join('');
+      } catch (err) {
+        body.innerHTML = '<p class="text-danger" style="font-size:12px">' + esc(err.message) + '</p>';
+      }
+    });
+  }
 
   /* ── Authenticated collection ─────────────────────────────────────────── */
 
@@ -867,16 +1397,25 @@
       btnAuth.disabled = true;
       btnAuth.innerHTML = '<i class="fa fa-spinner fa-spin me-1"></i> Collecting…';
       try {
-        const data = await api('/' + WATCH + '/collect-auth', {
+        const known = Array.from(await Store.existingKeys(WATCH));
+        const data = await api('/api/collect-auth', {
           method: 'POST',
           body: JSON.stringify({
-            credential_id: cid,
+            watch, credential_id: cid,
             query: $('#c-query').value.trim(),
             url: $('#authUrl').value.trim(),
             use_browser: $('#authBrowser').checked,
             limit: parseInt($('#c-limit').value, 10) || 25,
+            known_keys: known, strict: true,
           }),
         });
+        // Secrets stayed on the server; the posts come back here to be stored.
+        if (data.posts && data.posts.length) {
+          await Store.putMany('posts', data.posts.map((p) => Object.assign(p, {
+            watch_id: WATCH, rules_hash: data.rules_hash,
+          })));
+          await Data.saveWatch(watch);
+        }
         const rep = $('#collectReport');
         rep.style.display = '';
         const cls = data.ok ? 's-ok' : (data.blocked ? 's-blocked' : 's-bad');
@@ -909,5 +1448,196 @@
     }
   }).catch(() => {});
 
-  refresh();
+  /* ── Profile suggestions (Hunter) ─────────────────────────────────────
+     The correlation itself is done by the scoring engine; this just groups
+     the matches it already attached to each post. */
+
+  async function suggestProfiles() {
+    const probe = Object.assign({}, watch, { mode_hunter: true });
+    const rows = await Store.byIndex('posts', 'watch_id', IDBKeyRange.only(WATCH));
+    const scored = await Data.scorePosts(probe, rows.map((r) => Object.assign({}, r)));
+    const agg = {};
+    scored.forEach((p, i) => {
+      ((p.analysis || {}).profile_matches || []).forEach((m) => {
+        const e = agg[m.profile_id] || (agg[m.profile_id] = {
+          profile_id: m.profile_id, codename: m.codename, posts: [], best: 0,
+        });
+        e.best = Math.max(e.best, m.confidence);
+        e.posts.push({
+          post_id: rows[i].id, author: p.author, confidence: m.confidence,
+          matched: m.matched, kind: m.kind, via: m.via, score: p.score,
+          linked: rows[i].profile_id === m.profile_id,
+        });
+      });
+    });
+    const out = Object.values(agg).sort((a, b) => b.best - a.best);
+    out.forEach((e) => {
+      e.posts.sort((a, b) => b.confidence - a.confidence);
+      e.count = e.posts.length;
+    });
+    return { suggestions: out };
+  }
+
+  /* ── Export ───────────────────────────────────────────────────────────
+     Exports are built here rather than server-side, because the posts only
+     exist in this browser. */
+
+  function download(name, text, mime) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // A leading =, +, - or @ makes a spreadsheet treat a cell as a formula.
+  function csvCell(v) {
+    let str = v == null ? '' : String(v);
+    if (/^[=+\-@\t\r]/.test(str)) str = "'" + str;
+    return '"' + str.replace(/"/g, '""') + '"';
+  }
+
+  async function exportCsv() {
+    const rows = await Store.byIndex('posts', 'watch_id', IDBKeyRange.only(WATCH));
+    rows.sort((a, b) => Store.effScore(b) - Store.effScore(a));
+    const head = ['platform', 'author', 'handle', 'verified', 'risk_score',
+      'verdict', 'overridden', 'threat_types', 'signals', 'links', 'profile',
+      'status', 'analyst_note', 'url', 'posted_at', 'source', 'text'];
+    const profiles = await Store.all('profiles');
+    const byId = Object.fromEntries(profiles.map((x) => [x.id, x.codename]));
+    const lines = [head.join(',')];
+    rows.forEach((p) => {
+      const a = p.analysis || {};
+      lines.push([
+        p.platform, p.author, p.handle, p.verified, Store.effScore(p),
+        p.verdict_label || '', p.manual_score != null || !!p.manual_verdict,
+        (p.types || []).join('; '),
+        (a.signals || []).map((x) => x.label + ' (' + (x.w > 0 ? '+' : '') + x.w + ')').join('; '),
+        (a.links || []).map((l) => l.display).join(' '),
+        byId[p.profile_id] || '', p.status, p.analyst_note, p.url,
+        p.posted_at || '', p.source, p.text,
+      ].map(csvCell).join(','));
+    });
+    download('signal-monitor-' + WATCH + '-' +
+      new Date().toISOString().slice(0, 10) + '.csv',
+      lines.join('\n'), 'text/csv');
+    showToast('Exported ' + rows.length + ' post(s)', 'success');
+  }
+
+  async function exportJson() {
+    const rows = await Store.byIndex('posts', 'watch_id', IDBKeyRange.only(WATCH));
+    download('signal-monitor-' + WATCH + '.json', JSON.stringify({
+      watch, exported_at: new Date().toISOString(), posts: rows,
+    }, null, 2), 'application/json');
+    showToast('Exported ' + rows.length + ' post(s)', 'success');
+  }
+
+  /* ── Boot ─────────────────────────────────────────────────────────────
+     Everything above assumes `watch` and the form fields are populated, so
+     nothing runs until the watch has been read out of IndexedDB. */
+
+  function fillForm() {
+    $('#watchName').textContent = watch.name;
+    document.title = watch.name + ' — Signal Monitor';
+
+    const chips = [];
+    if (watch.mode_release) {
+      chips.push('<span class="mon-mode-chip release"><i class="fa fa-bullhorn"></i> Media Release Threat</span>');
+    }
+    if (watch.mode_hunter) {
+      chips.push('<span class="mon-mode-chip hunter"><i class="fa fa-crosshairs"></i> Digital Hunter</span>');
+    }
+    if (!chips.length) chips.push('<span class="mon-mode-chip std">Standard</span>');
+    if (watch.subject) {
+      chips.push('<span class="page-sub mb-0" style="font-size:12px">Subject: ' +
+        esc(watch.subject) + '</span>');
+    }
+    $('#watchChips').innerHTML = chips.join('');
+
+    $('#f-subject').value = watch.subject || '';
+    $('#m-release').checked = !!watch.mode_release;
+    $('#m-hunter').checked = !!watch.mode_hunter;
+    $('#tog-release').classList.toggle('on', !!watch.mode_release);
+    $('#tog-hunter').classList.toggle('on', !!watch.mode_hunter);
+    $('#release-panel').style.display = watch.mode_release ? '' : 'none';
+    const hunter = $('#hunterPanel');
+    if (hunter) hunter.style.display = watch.mode_hunter ? '' : 'none';
+
+    if ($('#f-reference')) $('#f-reference').value = watch.reference_text || '';
+    if ($('#f-accounts')) $('#f-accounts').value = watch.official_accounts || '';
+    if ($('#f-domains')) $('#f-domains').value = watch.official_domains || '';
+    $('#f-flags').value = watch.custom_flags || '';
+    $('#f-t-review').value = watch.threshold_review != null ? watch.threshold_review : 30;
+    $('#f-t-high').value = watch.threshold_high != null ? watch.threshold_high : 60;
+
+    const weights = watch.weights || {};
+    $$('[data-weight]').forEach((el) => {
+      const k = el.dataset.weight;
+      el.value = weights[k] != null ? weights[k] : el.dataset.default;
+    });
+
+    // Keyword buckets are stored newline-separated.
+    const split = (v) => String(v || '').split('\n').map((t) => t.trim()).filter(Boolean);
+    state.keywords = {
+      required: split(watch.kw_required),
+      optional: split(watch.kw_optional),
+      excluded: split(watch.kw_excluded),
+      match_mode: watch.kw_match_mode || 'all',
+    };
+
+    const opts = '<option value="">— no profile —</option>' + PROFILES.map((p) =>
+      '<option value="' + p.id + '">' + esc(p.codename) + '</option>').join('');
+    const sel = $('#f-profile');
+    if (sel) {
+      sel.innerHTML = opts;
+      sel.value = watch.profile_id || '';
+    }
+    const bulkProf = $('#bulkProfile');
+    if (bulkProf) {
+      bulkProf.innerHTML = '<option value="">Link to profile…</option>' +
+        PROFILES.map((p) => '<option value="' + p.id + '">' + esc(p.codename) + '</option>').join('');
+    }
+  }
+
+  async function boot() {
+    if (!WATCH) {
+      $('#list').innerHTML = '<div class="mon-empty">No watch id in the URL. ' +
+        '<a class="mon-out" href="/monitor/">Back to all watches</a>.</div>';
+      return;
+    }
+    watch = await Store.get('watches', WATCH);
+    if (!watch) {
+      $('#list').innerHTML = '<div class="mon-empty">' +
+        'That watch is not in this browser. It may have been created in another ' +
+        'browser or profile, or the site data was cleared. ' +
+        '<a class="mon-out" href="/monitor/">Back to all watches</a>.</div>';
+      $('#watchName').textContent = 'Watch not found';
+      return;
+    }
+    PROFILES = await Store.all('profiles');
+
+    fillForm();
+    renderChips();
+    markChangedWeights();
+    previewTopic();
+    await refresh();
+  }
+
+  $('#btnCsv').addEventListener('click', exportCsv);
+  $('#btnJson').addEventListener('click', exportJson);
+
+  boot().catch((e) => {
+    const list = $('#list');
+    if (list) {
+      list.innerHTML = '<div class="mon-empty">Could not read this browser&#39;s ' +
+        'storage. ' + esc(e.message) + '</div>';
+    }
+    const name = $('#watchName');
+    if (name) name.textContent = 'Storage unavailable';
+  });
 })();
+
