@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ graph.title if graph else 'New Map' }} — Link Mapper{% endblock %}
+
+{% block content %}
+<!-- Full-width layout for the editor, no padding -->
+<div style="display:flex; flex-direction:column; height:calc(100vh - 0px);">
+
+  <!-- Top bar -->
+  <div style="padding:12px 20px; background:var(--bg-card); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; flex-shrink:0;">
+    <a href="{{ url_for('linkmap.list_maps') }}" class="btn btn-ghost btn-sm">
+      <i class="fa fa-arrow-left"></i>
+    </a>
+
+    <input type="text" id="graphTitle" class="form-control"
+           style="max-width:280px;"
+           value="{{ graph.title if graph else 'Untitled Map' }}"
+           placeholder="Map title…">
+
+    <select id="graphProfileId" class="form-select" style="max-width:200px;">
+      <option value="">— No profile —</option>
+      {% for p in profiles %}
+      <option value="{{ p.id }}" {% if graph and graph.profile_id == p.id %}selected{% endif %}>
+        {{ p.codename }}
+      </option>
+      {% endfor %}
+    </select>
+
+    <input type="hidden" id="graphId" value="{{ graph.id if graph else '' }}">
+
+    <div class="d-flex gap-2 ms-auto align-items-center">
+      <span class="graph-count-badge" id="graphCountBadge"></span>
+      <span id="dirtyDot" class="dirty-dot" style="display:none;" title="Unsaved changes"></span>
+      <button class="btn btn-ghost btn-sm" onclick="fitGraph()" title="Fit view">
+        <i class="fa fa-maximize"></i>
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick="rerunLayout()" title="Rerun layout">
+        <i class="fa fa-rotate"></i>
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick="exportPNG()">
+        <i class="fa fa-image"></i> Export PNG
+      </button>
+      <button class="btn btn-primary btn-sm" id="saveGraphBtn" onclick="saveGraph()">
+        <i class="fa fa-save"></i> Save
+      </button>
+    </div>
+  </div>
+
+  <!-- Editor body -->
+  <div style="display:flex; flex:1; overflow:hidden;">
+
+    <!-- Canvas -->
+    <div id="linkmapCanvas" style="flex:1; background:var(--bg-deep);"></div>
+
+    <!-- Right panel -->
+    <div style="width:280px; min-width:280px; background:var(--bg-card); border-left:1px solid var(--border); overflow-y:auto; display:flex; flex-direction:column;">
+
+      <!-- Add Node -->
+      <div style="padding:14px; border-bottom:1px solid var(--border);">
+        <div class="card-title mb-3"><i class="fa fa-circle-plus me-2"></i>Add Node</div>
+        <div class="mb-2">
+          <label class="form-label">Type</label>
+          <select id="newNodeType" class="form-select"></select>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Label</label>
+          <input type="text" id="newNodeLabel" class="form-control" placeholder="e.g. John Doe">
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Detail / Tooltip</label>
+          <input type="text" id="newNodeDetail" class="form-control" placeholder="Extra info">
+        </div>
+        <button class="btn btn-outline btn-sm w-100" onclick="addNode()">
+          <i class="fa fa-plus"></i> Add Node
+        </button>
+      </div>
+
+      <!-- Add Edge -->
+      <div style="padding:14px; border-bottom:1px solid var(--border);">
+        <div class="card-title mb-3"><i class="fa fa-arrow-right-long me-2"></i>Add Edge</div>
+        <div class="mb-2">
+          <label class="form-label">Relationship</label>
+          <select id="newEdgeLabel" class="form-select"></select>
+        </div>
+        <div id="edgeStatus" style="font-size:11px; color:var(--accent); display:none; margin-bottom:8px;"></div>
+        <button class="btn btn-outline btn-sm w-100" id="addEdgeBtn" onclick="startAddEdge()">
+          <i class="fa fa-bezier-curve"></i> Add Edge
+        </button>
+        <div style="font-size:10px; color:var(--text-faint); margin-top:6px; text-align:center;">
+          Click two nodes to connect them
+        </div>
+      </div>
+
+      <!-- Properties panel -->
+      <div style="padding:14px; flex:1;" id="propPanel">
+        <div style="color:var(--text-faint); font-size:12px;">Click a node or edge to edit properties.</div>
+      </div>
+
+      <!-- Node type legend -->
+      <div style="padding:14px; border-top:1px solid var(--border);">
+        <div class="card-title mb-2">Legend</div>
+        {% set type_list = [
+          ('#2979ff', 'Person'), ('#ffd600', 'Email'), ('#e0e0e0', 'Username'),
+          ('#00e676', 'Phone'), ('#ff5252', 'IP'), ('#ce93d8', 'Website'),
+          ('#ff9800', 'Org'), ('#00e5ff', 'Location'), ('#a5d6a7', 'Device'), ('#90a4ae', 'Note')
+        ] %}
+        {% for color, label in type_list %}
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:5px; font-size:11px; color:var(--text-dim);">
+          <span style="width:12px; height:12px; border-radius:50%; background:{{ color }}; border:2px solid {{ color }}44; flex-shrink:0;"></span>
+          {{ label }}
+        </div>
+        {% endfor %}
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Graph data for JS -->
+<script id="graphDataRaw" type="application/json">
+{{ (graph.graph_json if graph else '{"nodes":[],"edges":[]}') | safe }}
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/linkmap.js') }}"></script>
+{% endblock %}

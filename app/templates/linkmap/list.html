@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Link Maps — PROFILER{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+  <div>
+    <div class="page-title">Link <span>Mapper</span></div>
+    <div class="page-subtitle">Visual node-graph intelligence mapping</div>
+  </div>
+  <a href="{{ url_for('linkmap.new_map') }}" class="btn btn-primary">
+    <i class="fa fa-plus"></i> New Map
+  </a>
+</div>
+
+<div class="page-body">
+  {% if graphs %}
+  <div class="profile-grid">
+    {% for g in graphs %}
+    <div class="card" style="position:relative;">
+      <div style="font-size:15px; font-weight:700; color:#fff; margin-bottom:6px; font-family:var(--font-mono);">
+        {{ g.title }}
+      </div>
+      {% if g.profile %}
+      <div style="font-size:11px; color:var(--text-dim); margin-bottom:10px;">
+        <i class="fa fa-id-card me-1"></i>{{ g.profile.codename }}
+      </div>
+      {% endif %}
+      <div style="font-size:10px; color:var(--text-faint);">
+        Updated {{ g.updated_at.strftime('%Y-%m-%d %H:%M') if g.updated_at else '—' }}
+      </div>
+      <div class="d-flex gap-2 mt-3">
+        <a href="{{ url_for('linkmap.edit_map', graph_id=g.id) }}" class="btn btn-outline btn-sm">
+          <i class="fa fa-pen"></i> Open
+        </a>
+        <button class="btn btn-danger btn-sm"
+                onclick="deleteMap({{ g.id }}, this)">
+          <i class="fa fa-trash"></i>
+        </button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div><i class="fa fa-diagram-project"></i></div>
+    <h3>No maps yet</h3>
+    <p>Create a link map to visualize connections between entities.</p>
+    <a href="{{ url_for('linkmap.new_map') }}" class="btn btn-outline mt-3">
+      <i class="fa fa-plus"></i> Create Map
+    </a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function deleteMap(id, btn) {
+  if (!confirm('Delete this map?')) return;
+  const res = await fetch(`/linkmap/${id}/delete`, {method: 'POST'});
+  if (res.ok) btn.closest('.card').remove();
+}
+</script>
+{% endblock %}

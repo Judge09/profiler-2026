@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}Signal Dashboard — PROFILER{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitor.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
+  <div>
+    <h1 class="page-title"><i class="fa fa-gauge-high me-2"></i>Signal Dashboard</h1>
+    <p class="page-sub mb-0" id="dashMeta">Loading…</p>
+  </div>
+  <div class="d-flex gap-2 align-items-center flex-wrap">
+    <select class="form-select form-select-sm" id="rangeSel" style="width:auto">
+      <option value="7">Last 7 days</option>
+      <option value="30" selected>Last 30 days</option>
+      <option value="90">Last 90 days</option>
+      <option value="180">Last 180 days</option>
+    </select>
+    <a class="btn btn-outline btn-sm" href="{{ url_for('monitor.vault_page') }}">
+      <i class="fa fa-key me-1"></i> Vault</a>
+    <a class="btn btn-outline btn-sm" href="{{ url_for('monitor.list_watches') }}">
+      <i class="fa fa-list me-1"></i> All watches</a>
+  </div>
+</div>
+
+<div id="dash"><div class="mon-empty">Loading dashboard…</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function ago(iso) {
+    if (!iso) return '';
+    const t = Date.parse(iso.length <= 10 ? iso + 'T00:00:00' : iso);
+    if (isNaN(t)) return iso;
+    const m = Math.round((Date.now() - t) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return m + ' min ago';
+    const h = Math.round(m / 60);
+    if (h < 24) return h + ' h ago';
+    const d = Math.round(h / 24);
+    return d < 30 ? d + ' d ago' : new Date(t).toISOString().slice(0, 10);
+  }
+
+  function openLink(r, label) {
+    if (!r.url) return '';
+    const search = r.link_kind === 'search';
+    return '<a class="mon-tag" href="' + esc(r.url) + '" target="_blank" rel="noopener noreferrer" ' +
+      'title="' + (search ? 'Opens a search for this headline' : esc(r.url)) + '">' +
+      '<i class="fa fa-arrow-up-right-from-square"></i> ' +
+      (label || (search ? 'find' : 'open')) + '</a>';
+  }
+
+  // Activity-by-day bars. Plain SVG keeps it dependency-free and theme-aware.
+  function timeline(rows) {
+    if (!rows.length) return '<p class="mon-note mb-0">No dated posts in this range.</p>';
+    const max = Math.max.apply(null, rows.map((r) => r.total)) || 1;
+    const W = Math.max(rows.length * 26, 260), H = 120, pad = 18;
+    const bw = Math.max(6, Math.min(22, (W - pad * 2) / rows.length - 4));
+    let bars = '', ticks = '';
+    rows.forEach((r, i) => {
+      const x = pad + i * ((W - pad * 2) / rows.length);
+      let y = H - pad;
+      [['ok', 'var(--green)'], ['warn', 'var(--yellow)'], ['bad', 'var(--red)']].forEach(([k, col]) => {
+        const h = (r[k] / max) * (H - pad * 2);
+        if (h <= 0) return;
+        y -= h;
+        bars += '<rect x="' + x + '" y="' + y + '" width="' + bw + '" height="' + h +
+          '" fill="' + col + '" rx="1"><title>' + r.date + ': ' + r[k] + ' ' + k + '</title></rect>';
+      });
+      if (i === 0 || i === rows.length - 1 || rows.length <= 12) {
+        ticks += '<text x="' + (x + bw / 2) + '" y="' + (H - 4) + '" text-anchor="middle" ' +
+          'font-size="9" fill="var(--text-dim)" font-family="var(--font-mono)">' +
+          r.date.slice(5) + '</text>';
+      }
+    });
+    return '<div style="overflow-x:auto"><svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="' + H +
+      '" role="img" aria-label="Posts per day">' + bars + ticks + '</svg></div>';
+  }
+
+  function kv(k, v, cls, sub) {
+    return '<div class="mon-kv"><span class="k">' + k +
+      (sub ? '<small>' + sub + '</small>' : '') + '</span>' +
+      '<span class="v ' + (cls || '') + '">' + v + '</span></div>';
+  }
+
+  async function load() {
+    const days = $('#rangeSel').value;
+    let d;
+    try {
+      const res = await fetch('/monitor/dashboard/data?days=' + days);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed');
+    } catch (e) {
+      $('#dash').innerHTML = '<div class="mon-empty">Could not load the dashboard.</div>';
+      return;
+    }
+
+    $('#dashMeta').textContent = d.watch_count + ' watch' + (d.watch_count === 1 ? '' : 'es') +
+      ' · ' + d.post_total + ' posts · updated ' + d.generated_at;
+
+    const cells = [];
+
+    // Headline numbers.
+    cells.push('<div class="mon-brief-cell"><h6>Right now</h6><div class="mon-bignum">' +
+      '<div class="n-bad"><b>' + d.totals.bad + '</b><span>High</span></div>' +
+      '<div class="n-warn"><b>' + d.totals.warn + '</b><span>Review</span></div>' +
+      '<div class="n-pend"><b>' + d.pending + '</b><span>Untriaged</span></div>' +
+      '<div class="n-ok"><b>' + d.escalated + '</b><span>Escalated</span></div>' +
+      '</div></div>');
+
+    // Watches, each linking through.
+    cells.push('<div class="mon-brief-cell"><h6>Watches</h6>' +
+      (d.watches.length ? d.watches.map((w) =>
+        kv('<a class="mon-out" href="/monitor/' + w.id + '">' + esc(w.name) + '</a>',
+           w.counts.bad + w.counts.warn + '/' + w.total,
+           w.counts.bad ? 'up' : 'dim',
+           esc(w.mode_label) + (w.newest ? ' · newest ' + esc(ago(w.newest)) : ''))
+      ).join('') : '<p class="mon-note mb-0">No watches yet.</p>') + '</div>');
+
+    if (d.platforms.length) {
+      cells.push('<div class="mon-brief-cell"><h6>By platform</h6>' +
+        d.platforms.slice(0, 6).map((p) =>
+          kv(esc(p.platform), p.total, p.flagged ? 'up' : 'dim',
+             p.flagged + ' flagged')).join('') + '</div>');
+    }
+
+    if (d.types.length) {
+      cells.push('<div class="mon-brief-cell"><h6>Threat types</h6>' +
+        d.types.slice(0, 6).map((t) => kv(esc(t.type), t.count, 'dim')).join('') + '</div>');
+    }
+
+    // Collector + credential health.
+    let health = '';
+    health += kv('Credential vault',
+      d.credentials.unlocked ? 'unlocked' : 'locked',
+      d.credentials.unlocked ? '' : 'dim',
+      d.credentials.total + ' stored' + (d.credentials.failing ? ' · ' + d.credentials.failing + ' failing' : ''));
+    (d.sources || []).slice(0, 5).forEach((s) => {
+      health += kv(esc(s.source), s.ok ? 'ok' : 'check', s.ok ? '' : 'up',
+        esc((s.last_note || '').slice(0, 46)) + (s.last_run ? ' · ' + esc(ago(s.last_run)) : ''));
+    });
+    cells.push('<div class="mon-brief-cell"><h6>Source health</h6>' + health + '</div>');
+
+    // The actual work queue.
+    if (d.queue.length) {
+      cells.push('<div class="mon-brief-cell wide"><h6>Untriaged queue — highest risk first</h6>' +
+        '<div class="mon-queue">' + d.queue.map((r) =>
+          '<a class="v-' + r.verdict + '" href="/monitor/' + r.watch_id + '#post-' + r.post_id + '">' +
+          '<span class="sc">' + r.score + '</span><span class="bd">' +
+          '<span class="who">' + esc(r.author) + '</span> ' +
+          '<span class="mon-tag">' + esc(r.platform) + '</span> ' +
+          '<span class="mon-tag">' + esc(r.watch) + '</span> ' +
+          (r.types.length ? '<span class="mon-tag">' + esc(r.types[0]) + '</span>' : '') +
+          '<span class="ex">' + esc(r.excerpt) + '</span></span></a>'
+        ).join('') + '</div></div>');
+    }
+
+    // Activity over time.
+    cells.push('<div class="mon-brief-cell wide"><h6>Activity over the last ' + d.days + ' days</h6>' +
+      timeline(d.timeline) +
+      '<p class="mon-note mb-0" style="margin-top:6px">' +
+      '<span style="color:var(--red)">■</span> high risk &nbsp;' +
+      '<span style="color:var(--yellow)">■</span> needs review &nbsp;' +
+      '<span style="color:var(--green)">■</span> clear</p></div>');
+
+    if (d.recent.length) {
+      cells.push('<div class="mon-brief-cell wide"><h6>Most recent flagged posts</h6>' +
+        '<div class="mon-queue mon-scroll">' + d.recent.map((r) =>
+          '<a class="v-' + r.verdict + '" href="/monitor/' + r.watch_id + '#post-' + r.post_id + '">' +
+          '<span class="sc">' + r.score + '</span><span class="bd">' +
+          '<span class="who">' + esc(r.author) + '</span> ' +
+          '<span class="mon-tag">' + esc(r.platform) + '</span> ' +
+          (r.when ? '<span class="mon-tag">' + esc(ago(r.when)) + '</span> ' : '') +
+          openLink(r) +
+          '<span class="ex">' + esc(r.excerpt) + '</span></span></a>'
+        ).join('') + '</div></div>');
+    }
+
+    if (d.stale.length) {
+      cells.push('<div class="mon-brief-cell wide"><h6>Needs attention</h6>' +
+        d.stale.map((s) => '<div class="mon-gap"><i class="fa fa-clock"></i><span>' +
+          '<a class="mon-out" href="/monitor/' + s.id + '">' + esc(s.name) + '</a> — ' +
+          (s.newest ? 'nothing newer than ' + esc(s.newest) + '. Collect again to keep it current.'
+                    : 'has no posts yet.') +
+          '</span></div>').join('') + '</div>');
+    }
+
+    $('#dash').innerHTML = '<div class="mon-brief"><div class="mon-brief-body">' +
+      cells.join('') + '</div></div>';
+  }
+
+  $('#rangeSel').addEventListener('change', load);
+  load();
+})();
+</script>
+{% endblock %}

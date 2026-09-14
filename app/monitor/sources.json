@@ -1,0 +1,25 @@
+{
+  "_comment": "Mirror hosts for social platforms that block direct scraping. These are volunteer-run and go offline often - edit this list freely, the app reads it at request time and needs no restart. {query} is replaced with the URL-encoded search term.",
+  "mirrors": {
+    "nitter": [
+      "https://nitter.privacyredirect.com/search/rss?f=tweets&q={query}",
+      "https://nitter.poast.org/search/rss?f=tweets&q={query}",
+      "https://nitter.tiekoetter.com/search/rss?f=tweets&q={query}",
+      "https://nitter.net/search/rss?f=tweets&q={query}"
+    ],
+    "teddit": [
+      "https://teddit.net/r/all/search?q={query}&sort=new&format=rss",
+      "https://teddit.pussthecat.org/r/all/search?q={query}&sort=new&format=rss"
+    ]
+  },
+  "suggested_feeds": [
+    {"name": "Google News (query)", "url": "https://news.google.com/rss/search?q={query}"},
+    {"name": "Bing News (query)", "url": "https://www.bing.com/news/search?q={query}&format=RSS"},
+    {"name": "Reddit subreddit", "url": "https://www.reddit.com/r/{query}/new/.rss"},
+    {"name": "YouTube channel", "url": "https://www.youtube.com/feeds/videos.xml?channel_id={query}"},
+    {"name": "Inquirer PH", "url": "https://www.inquirer.net/fullfeed"},
+    {"name": "Rappler", "url": "https://www.rappler.com/feed/"},
+    {"name": "GMA News", "url": "https://data.gmanetwork.com/gno/rss/news/feed.xml"},
+    {"name": "Philstar", "url": "https://www.philstar.com/rss/headlines"}
+  ]
+}

@@ -1,0 +1,412 @@
+{% extends "base.html" %}
+{% block title %}{{ w.name }} — Signal Monitor{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitor.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
+  <div style="min-width:0">
+    <a href="{{ url_for('monitor.list_watches') }}" style="font-size:12px"><i class="fa fa-arrow-left me-1"></i>All watches</a>
+    <h1 class="page-title mt-1 mb-1">{{ w.name }}</h1>
+    <div class="d-flex gap-2 align-items-center flex-wrap">
+      {% if w.mode_release %}<span class="mon-mode-chip release"><i class="fa fa-bullhorn"></i> Media Release Threat</span>{% endif %}
+      {% if w.mode_hunter %}<span class="mon-mode-chip hunter"><i class="fa fa-crosshairs"></i> Digital Hunter</span>{% endif %}
+      {% if not w.mode_release and not w.mode_hunter %}<span class="mon-mode-chip std">Standard</span>{% endif %}
+      {% if w.subject %}<span class="page-sub mb-0" style="font-size:12px">Subject: {{ w.subject }}</span>{% endif %}
+    </div>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <button class="btn btn-outline btn-sm" id="btnSandbox"><i class="fa fa-flask me-1"></i> Test scoring</button>
+    <a class="btn btn-outline btn-sm" href="{{ url_for('monitor.export_csv', watch_id=w.id) }}"><i class="fa fa-file-csv me-1"></i> CSV</a>
+    <a class="btn btn-outline btn-sm" href="{{ url_for('monitor.export_json', watch_id=w.id) }}"><i class="fa fa-file-code me-1"></i> JSON</a>
+    <button class="btn btn-danger btn-sm" id="btnDeleteWatch"><i class="fa fa-trash"></i></button>
+  </div>
+</div>
+
+<div class="mon-grid">
+  <!-- ── Sidebar ───────────────────────────────────────────────────────── -->
+  <aside class="mon-side">
+
+    <!-- Modes -->
+    <div class="card">
+      <div class="card-header-bar"><span class="card-title">Trigger modes</span></div>
+      <div class="p-2 d-grid gap-2">
+        <label class="mon-toggle release {% if w.mode_release %}on{% endif %}" id="tog-release">
+          <input type="checkbox" id="m-release" {% if w.mode_release %}checked{% endif %}>
+          <div>
+            <div class="t"><i class="fa fa-bullhorn me-1"></i> Media Release Threat</div>
+            <div class="s">Scores posts against an official release: impersonation, contradictions, account compromise.</div>
+          </div>
+        </label>
+        <label class="mon-toggle hunter {% if w.mode_hunter %}on{% endif %}" id="tog-hunter">
+          <input type="checkbox" id="m-hunter" {% if w.mode_hunter %}checked{% endif %}>
+          <div>
+            <div class="t"><i class="fa fa-crosshairs me-1"></i> Digital Hunter</div>
+            <div class="s">Correlates authors against stored profiles. Adds doxxing and threat-language rules.</div>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <!-- Watch settings -->
+    <div class="card">
+      <div class="card-header-bar"><span class="card-title">Watch settings</span></div>
+      <div class="p-2 d-grid gap-2">
+        <div>
+          <label class="form-label">Subject</label>
+          <input class="form-control form-control-sm" id="f-subject" value="{{ w.subject or '' }}">
+        </div>
+        <div>
+          <label class="form-label">Keywords</label>
+          <input class="form-control form-control-sm" id="f-keywords" value="{{ w.keywords or '' }}">
+          <div class="form-text">
+            Comma separated. A post must mention at least one <b>specific</b> term
+            to count as on-topic — generic words like "election" only broaden the
+            search. Prefix a term with <span class="mon-kbd">+</span> to force it
+            to be required.
+          </div>
+          <div id="topicPreview" class="mon-note mt-1"></div>
+        </div>
+        <div>
+          <label class="form-label">Linked profile</label>
+          <select class="form-select form-select-sm" id="f-profile">
+            <option value="">— none —</option>
+            {% for p in profiles %}
+            <option value="{{ p.id }}" {% if w.profile_id == p.id %}selected{% endif %}>{{ p.codename }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Release mode fields -->
+    <div class="card" id="release-panel" {% if not w.mode_release %}style="display:none"{% endif %}>
+      <div class="card-header-bar"><span class="card-title"><i class="fa fa-bullhorn me-1"></i> Official release</span></div>
+      <div class="p-2 d-grid gap-2">
+        <div>
+          <label class="form-label">Release text</label>
+          <textarea class="form-control form-control-sm" id="f-reference" rows="6">{{ w.reference_text or '' }}</textarea>
+          <div class="form-text">Posts are compared against this.</div>
+        </div>
+        <div>
+          <label class="form-label">Official accounts</label>
+          <textarea class="form-control form-control-sm" id="f-accounts" rows="3" placeholder="Facebook apc.cybersecurity&#10;X @APC_Cyber">{{ w.official_accounts or '' }}</textarea>
+          <div class="form-text">One per line: platform, then handle.</div>
+        </div>
+        <div>
+          <label class="form-label">Official domains</label>
+          <input class="form-control form-control-sm" id="f-domains" value="{{ w.official_domains or '' }}" placeholder="apc.edu.ph">
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual scoring -->
+    <div class="card">
+      <div class="card-header-bar">
+        <span class="card-title"><i class="fa fa-sliders me-1"></i> Scoring controls</span>
+        <button class="btn btn-ghost btn-xs" id="btnResetWeights">Reset</button>
+      </div>
+      <div class="p-2 d-grid gap-2">
+        <div>
+          <label class="form-label">Custom flag keywords</label>
+          <textarea class="form-control form-control-sm" id="f-flags" rows="5" placeholder="voucher scam = 20&#10;/free\s+load/ = 15 | telco bait&#10;tuition refund">{{ w.custom_flags or '' }}</textarea>
+          <div class="form-text">
+            One rule per line. <span class="mon-kbd">word</span>,
+            <span class="mon-kbd">word = 15</span>,
+            <span class="mon-kbd">/regex/ = 20</span>,
+            or add <span class="mon-kbd">| label</span>.
+          </div>
+        </div>
+        <div class="row g-2">
+          <div class="col-6">
+            <label class="form-label">Review at</label>
+            <input type="number" min="0" max="100" class="form-control form-control-sm" id="f-t-review" value="{{ w.threshold_review }}">
+          </div>
+          <div class="col-6">
+            <label class="form-label">High risk at</label>
+            <input type="number" min="0" max="100" class="form-control form-control-sm" id="f-t-high" value="{{ w.threshold_high }}">
+          </div>
+        </div>
+        <details>
+          <summary style="cursor:pointer;font-size:12px;color:var(--text-dim)">Rule weights</summary>
+          <div class="mon-weights mt-2" id="weightGrid">
+            {% for key, val in default_weights.items() %}
+            <span data-wlabel="{{ key }}">{{ key.replace('_',' ') }}</span>
+            <input type="number" data-weight="{{ key }}" data-default="{{ val }}" value="{{ weights[key] }}">
+            {% endfor %}
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <button class="btn btn-primary w-100" id="btnApply"><i class="fa fa-rotate me-1"></i> Apply and rescore</button>
+  </aside>
+
+  <!-- ── Main ──────────────────────────────────────────────────────────── -->
+  <div style="min-width:0">
+
+    <!-- Briefing: the situation at a glance, before reading any single post -->
+    <div id="briefing"></div>
+
+    <!-- Summary -->
+    <div class="card p-3 mb-3">
+      <h4 id="sumTitle" style="font-size:19px;font-weight:700;margin:0">…</h4>
+      <p class="page-sub mb-0" id="scanMeta" style="font-size:12px"></p>
+      <div class="mon-dist" id="dist">
+        <span class="d-bad"></span><span class="d-warn"></span><span class="d-ok"></span>
+      </div>
+      <div class="mon-legend" id="legend"></div>
+    </div>
+
+    <!-- Collection -->
+    <div class="card mb-3">
+      <div class="card-header-bar">
+        <span class="card-title"><i class="fa fa-download me-1"></i> Collect posts</span>
+        <div class="d-flex gap-2">
+          <button class="btn btn-ghost btn-xs" id="btnDorks"><i class="fa fa-magnifying-glass me-1"></i> Dork links</button>
+          <button class="btn btn-outline btn-xs" id="btnAddPost"><i class="fa fa-plus me-1"></i> Add manually</button>
+          <button class="btn btn-outline btn-xs" id="btnImport"><i class="fa fa-file-import me-1"></i> Import JSON</button>
+        </div>
+      </div>
+      <div class="p-3">
+        <div class="d-flex gap-2 mb-2 flex-wrap align-items-end">
+          <div class="flex-grow-1" style="min-width:200px">
+            <label class="form-label">Search query</label>
+            <input class="form-control form-control-sm" id="c-query"
+                   placeholder="Leave blank to use the watch keywords">
+          </div>
+          <div style="width:110px">
+            <label class="form-label">Per source</label>
+            <input type="number" class="form-control form-control-sm" id="c-limit" value="25" min="1" max="100">
+          </div>
+          <button class="btn btn-primary btn-sm" id="btnCollect"><i class="fa fa-satellite-dish me-1"></i> Collect now</button>
+        </div>
+
+        <div class="mon-src" id="srcGrid">
+          {% for s in sources %}
+          <div class="mon-src-item {% if s.key in ('google_news','reddit') %}on{% endif %}" data-src="{{ s.key }}" data-needsurl="{{ 1 if s.get('needs_url') else 0 }}">
+            <div class="n"><span class="dot {% if not s.live %}manual{% endif %}"></span>{{ s.name }}</div>
+            <div class="d">{{ s.desc }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="form-text mt-2">
+          <span style="color:var(--green)">●</span> fetches live &nbsp;
+          <span style="color:var(--yellow)">●</span> login-walled — opens the search for manual collection
+        </div>
+
+        <div id="urlFields" class="mt-2" style="display:none">
+          <label class="form-label">Feed or page URL</label>
+          <input class="form-control form-control-sm" id="c-url" placeholder="https://example.com/feed">
+          <div class="form-text">
+            Suggested:
+            {% for f in suggested %}<a href="#" class="sugg" data-url="{{ f.url }}">{{ f.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+          </div>
+        </div>
+
+        <!-- Authenticated collection, when the vault has usable credentials -->
+        <div id="authRow" class="mt-3 pt-3" style="display:none;border-top:1px solid var(--border)">
+          <div class="d-flex gap-2 align-items-end flex-wrap">
+            <div style="min-width:180px">
+              <label class="form-label"><i class="fa fa-key me-1"></i>Logged-in source</label>
+              <select class="form-select form-select-sm" id="authCred"></select>
+            </div>
+            <div class="flex-grow-1" style="min-width:170px">
+              <label class="form-label">URL override (optional)</label>
+              <input class="form-control form-control-sm" id="authUrl"
+                     placeholder="Leave blank to use the platform's search">
+            </div>
+            <label class="d-flex gap-2 align-items-center" style="font-size:12px;white-space:nowrap">
+              <input type="checkbox" id="authBrowser"> Use browser
+            </label>
+            <button class="btn btn-outline btn-sm" id="btnAuthCollect">
+              <i class="fa fa-user-lock me-1"></i> Collect logged-in</button>
+          </div>
+          <div class="form-text" id="authHint"></div>
+        </div>
+
+        <div id="collectReport" class="mon-report mt-3" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Hunter suggestions -->
+    {% if w.mode_hunter %}
+    <div class="card mb-3" id="hunterPanel">
+      <div class="card-header-bar">
+        <span class="card-title"><i class="fa fa-crosshairs me-1"></i> Profile correlation</span>
+        <button class="btn btn-ghost btn-xs" id="btnSuggest">Scan for matches</button>
+      </div>
+      <div class="p-3" id="suggestBody">
+        <p class="mon-note mb-0">Scan to see which stored profiles these posts point at.</p>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Toolbar -->
+    <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
+      <input type="search" class="form-control form-control-sm" id="q" placeholder="Search posts or authors" style="flex:1;min-width:180px">
+      <select class="form-select form-select-sm" id="sortSel" style="width:auto">
+        <option value="risk">Highest risk first</option>
+        <option value="recent">Newest first</option>
+        <option value="platform">By platform</option>
+        <option value="status">By status</option>
+      </select>
+      <button class="btn btn-outline btn-sm" id="btnLinkmap"><i class="fa fa-diagram-project me-1"></i> To link map</button>
+    </div>
+
+    <div id="bulkBar" class="mon-triage mb-3" style="display:none">
+      <span style="font-size:12px"><b id="selCount">0</b> selected</span>
+      <select class="form-select form-select-sm" id="bulkStatus" style="width:auto">
+        <option value="">Set status…</option>
+        {% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+      </select>
+      <select class="form-select form-select-sm" id="bulkProfile" style="width:auto">
+        <option value="">Link to profile…</option>
+        {% for p in profiles %}<option value="{{ p.id }}">{{ p.codename }}</option>{% endfor %}
+      </select>
+      <button class="btn btn-ghost btn-xs" id="bulkClear">Clear overrides</button>
+      <button class="btn btn-danger btn-xs" id="bulkDelete">Delete</button>
+      <button class="btn btn-ghost btn-xs ms-auto" id="bulkDeselect">Deselect all</button>
+    </div>
+
+    <div id="list"></div>
+  </div>
+</div>
+
+<!-- Add post modal -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title">Add a post</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2">
+          <div class="col-md-3">
+            <label class="form-label">Platform</label>
+            <select class="form-select form-select-sm" id="np-platform">
+              <option>Facebook</option><option>X</option><option>Instagram</option>
+              <option>TikTok</option><option>YouTube</option><option>Reddit</option>
+              <option>News site</option><option>Other</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Display name *</label>
+            <input class="form-control form-control-sm" id="np-author">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Handle</label>
+            <input class="form-control form-control-sm" id="np-handle" placeholder="@handle">
+          </div>
+          <div class="col-md-2 d-flex align-items-end">
+            <label class="d-flex gap-2 align-items-center" style="font-size:12px">
+              <input type="checkbox" id="np-verified"> Verified
+            </label>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Link in post</label>
+            <input class="form-control form-control-sm" id="np-url" placeholder="https://">
+          </div>
+          <div class="col-12">
+            <label class="form-label">Post text *</label>
+            <textarea class="form-control form-control-sm" id="np-text" rows="5"></textarea>
+          </div>
+        </div>
+        <div id="np-preview" class="mt-3"></div>
+        <p class="text-danger mb-0 mt-2" id="np-err" style="font-size:12px"></p>
+      </div>
+      <div class="modal-footer" style="border-color:var(--border)">
+        <button class="btn btn-ghost btn-sm" id="np-test">Preview score</button>
+        <button class="btn btn-primary btn-sm" id="np-save">Add and scan</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Import modal -->
+<div class="modal fade" id="importModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title">Import posts</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mon-note">Paste a JSON array. Each post needs <b>author</b> and <b>text</b>. Optional: <b>platform</b>, <b>handle</b>, <b>verified</b>, <b>url</b>, <b>posted_at</b>.</p>
+        <textarea class="form-control form-control-sm" id="imp-text" rows="10" style="font-family:var(--font-mono);font-size:12px"
+          placeholder='[{"platform":"X","author":"Name","handle":"@name","verified":false,"text":"..."}]'></textarea>
+        <label class="d-flex gap-2 align-items-center mt-2" style="font-size:12px">
+          <input type="checkbox" id="imp-replace"> Replace all current posts
+        </label>
+        <p class="text-danger mb-0 mt-2" id="imp-err" style="font-size:12px"></p>
+      </div>
+      <div class="modal-footer" style="border-color:var(--border)">
+        <button class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="imp-save">Import</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Scoring sandbox -->
+<div class="modal fade" id="sandboxModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title"><i class="fa fa-flask me-2"></i>Test scoring</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body mon-sandbox">
+        <p class="mon-note">Paste any text to see exactly how the current rules score it. Nothing is saved.</p>
+        <div class="row g-2 mb-2">
+          <div class="col-md-4"><input class="form-control form-control-sm" id="sb-author" placeholder="Display name" value="Test Account"></div>
+          <div class="col-md-4"><input class="form-control form-control-sm" id="sb-handle" placeholder="@handle"></div>
+          <div class="col-md-4">
+            <select class="form-select form-select-sm" id="sb-platform">
+              <option>Facebook</option><option>X</option><option>Instagram</option>
+              <option>TikTok</option><option>Reddit</option><option>Other</option>
+            </select>
+          </div>
+        </div>
+        <textarea class="form-control form-control-sm" id="sb-text" rows="4" placeholder="Paste post text here…"></textarea>
+        <div id="sb-out" class="mt-3"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Dorks modal -->
+<div class="modal fade" id="dorksModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title">Search links</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mon-note">Open these in a browser, then paste what you find via <b>Add manually</b> or <b>Import</b>.</p>
+        <div id="dorkList" class="d-grid gap-2"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script id="bootstrapData" type="application/json">
+{{ {'watchId': w.id, 'statuses': statuses|list, 'profiles': profiles|map(attribute='id')|list} | tojson }}
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.MONITOR = {
+  watchId: {{ w.id }},
+  profiles: [{% for p in profiles %}{id:{{ p.id }},codename:{{ p.codename|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
+  statuses: {{ statuses|list|tojson }},
+  defaultWeights: {{ default_weights|tojson }}
+};
+</script>
+<script src="{{ url_for('static', filename='js/monitor.js') }}"></script>
+{% endblock %}

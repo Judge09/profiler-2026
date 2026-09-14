@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Dork Engine — PROFILER{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+  <div>
+    <div class="page-title">Dork <span>Engine</span></div>
+    <div class="page-subtitle">Google Dorking — templates, custom queries, history</div>
+  </div>
+</div>
+
+<div class="page-body">
+  <div class="row g-4">
+
+    <!-- LEFT: Template Library -->
+    <div class="col-lg-5">
+      <div class="card" style="height:calc(100vh - 160px); display:flex; flex-direction:column;">
+        <div class="card-header-bar">
+          <div class="card-title"><i class="fa fa-book me-2"></i>Template Library</div>
+        </div>
+
+        <!-- Category filter -->
+        <div class="dork-category-pills mb-3 flex-wrap">
+          <span class="dork-pill dork-cat-pill active" data-cat="all"
+                onclick="document.querySelectorAll('.dork-cat-pill').forEach(p=>p.classList.remove('active')); this.classList.add('active'); window.dorkSelectAllCat();">
+            All
+          </span>
+          <span id="dorkCategoryBar" style="display:contents;"></span>
+        </div>
+
+        <!-- Template list -->
+        <div id="dorkTemplateList" class="dork-template-list flex-1" style="overflow-y:auto; flex:1;"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Builder + Tabs -->
+    <div class="col-lg-7">
+
+      <!-- Builder card -->
+      <div class="card mb-4">
+        <div class="card-header-bar">
+          <div class="card-title"><i class="fa fa-hammer me-2"></i>Query Builder</div>
+        </div>
+
+        <!-- Link to profile (optional) -->
+        <div class="mb-3">
+          <label class="form-label">Link to Profile (optional)</label>
+          <select id="dorkProfileSelect" class="form-select">
+            <option value="">— None —</option>
+            {% for profile in profiles %}
+            <option value="{{ profile.id }}">{{ profile.codename }}{% if profile.real_name %} ({{ profile.real_name }}){% endif %}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <!-- Variables area -->
+        <div class="mb-3" id="dorkVarsContainer">
+          <div style="color:var(--text-faint); font-size:12px;">Select a template from the library or type a custom query below.</div>
+        </div>
+
+        <!-- Custom query input -->
+        <div class="mb-3">
+          <label class="form-label">Custom Query</label>
+          <input type="text" id="customDorkInput" class="form-control mono"
+                 placeholder='e.g. site:linkedin.com "John Doe"'>
+        </div>
+
+        <!-- Live preview -->
+        <div class="mb-3">
+          <div class="d-flex align-items-center justify-content-between mb-1">
+            <label class="form-label" style="margin-bottom:0;">Query Preview</label>
+            <button class="copy-btn" id="dorkCopyBtn" onclick="copyDorkQuery()" title="Copy query">
+              <i class="fa fa-copy"></i> Copy
+            </button>
+          </div>
+          <div class="dork-preview" id="dorkPreview">Select a template or type a custom query…</div>
+        </div>
+
+        <!-- Variable syntax hint -->
+        <div id="dorkVarHint" style="font-size:10px; color:var(--text-faint); margin-bottom:12px; display:none;">
+          <i class="fa fa-circle-info me-1"></i>
+          Use <code style="color:var(--green); background:var(--bg-deep); padding:1px 5px; border-radius:3px;">{variable_name}</code>
+          placeholders in templates — they become input fields above.
+        </div>
+
+        <div class="d-flex gap-2">
+          <button class="btn btn-primary" id="dorkRunBtn">
+            <i class="fa fa-magnifying-glass"></i> Search Google
+          </button>
+          <button class="btn btn-outline" id="dorkFavBtn">
+            <i class="fa fa-star"></i> Save Favorite
+          </button>
+        </div>
+      </div>
+
+      <!-- Tabs: History / Favorites / Custom Templates -->
+      <div class="card">
+        <div class="tab-bar">
+          <button class="tab-btn active" data-tab="history" onclick="switchTab('history')">
+            <i class="fa fa-clock me-1"></i> History
+          </button>
+          <button class="tab-btn" data-tab="favorites" onclick="switchTab('favorites')">
+            <i class="fa fa-star me-1"></i> Favorites
+          </button>
+          <button class="tab-btn" data-tab="custom" onclick="switchTab('custom')">
+            <i class="fa fa-plus-circle me-1"></i> Custom Template
+          </button>
+        </div>
+
+        <!-- History -->
+        <div class="tab-content active" id="tab-history">
+          <div id="dorkHistory">
+            <div style="color:var(--text-faint); font-size:12px;">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Favorites -->
+        <div class="tab-content" id="tab-favorites">
+          <div id="dorkFavorites">
+            <div style="color:var(--text-faint); font-size:12px;">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Custom Template Builder -->
+        <div class="tab-content" id="tab-custom">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Template Name</label>
+              <input type="text" id="customTmplName" class="form-control" placeholder="My Custom Dork">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Category</label>
+              <input type="text" id="customTmplCategory" class="form-control" placeholder="Custom">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Query Template</label>
+              <input type="text" id="customTmplQuery" class="form-control mono"
+                     placeholder='site:{domain} filetype:pdf "{keyword}"'>
+              <div style="font-size:10px; color:var(--text-faint); margin-top:4px;">
+                Use {variable_name} for dynamic fields.
+              </div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Description</label>
+              <input type="text" id="customTmplDesc" class="form-control" placeholder="What does this dork find?">
+            </div>
+            <div class="col-12">
+              <button class="btn btn-primary btn-sm" onclick="saveCustomTemplate()">
+                <i class="fa fa-save"></i> Save Template
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Expose all-cat selection for the pill
+window.dorkSelectAllCat = function() {
+  if (window._dorkRenderAll) window._dorkRenderAll();
+};
+</script>
+<script src="{{ url_for('static', filename='js/dork_builder.js') }}"></script>
+<script>
+// Patch: expose renderAll hook after script loads
+window._dorkRenderAll = function() {
+  // dork_builder.js handles this internally via renderTemplateList('all')
+  document.querySelectorAll('.dork-cat-pill').forEach(p => p.classList.remove('active'));
+};
+</script>
+{% endblock %}

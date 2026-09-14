@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Signal Monitor — PROFILER{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitor.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+  <div>
+    <h1 class="page-title"><i class="fa fa-satellite-dish me-2"></i>Signal Monitor</h1>
+    <p class="page-sub">Track posts by keyword, score them for risk, and tie them back to your profiles.</p>
+  </div>
+  <button class="btn btn-primary" id="btnNewWatch"><i class="fa fa-plus me-1"></i> New watch</button>
+</div>
+
+{% if summary %}
+<div class="row g-3">
+  {% for s in summary %}
+  <div class="col-md-6 col-xl-4">
+    <a class="mon-watch-card" href="{{ url_for('monitor.watch_detail', watch_id=s.watch.id) }}">
+      <div class="d-flex justify-content-between align-items-start gap-2">
+        <div style="min-width:0">
+          <h5>{{ s.watch.name }}</h5>
+          <div class="sub">{{ s.watch.subject or 'no subject' }}</div>
+        </div>
+        <div class="d-flex flex-column gap-1 align-items-end">
+          {% if s.watch.mode_release %}<span class="mon-mode-chip release"><i class="fa fa-bullhorn"></i> Release</span>{% endif %}
+          {% if s.watch.mode_hunter %}<span class="mon-mode-chip hunter"><i class="fa fa-crosshairs"></i> Hunter</span>{% endif %}
+          {% if not s.watch.mode_release and not s.watch.mode_hunter %}<span class="mon-mode-chip std">Standard</span>{% endif %}
+        </div>
+      </div>
+
+      <div class="mon-dist">
+        <span class="d-bad" style="flex-grow:{{ s.counts.bad }}"></span>
+        <span class="d-warn" style="flex-grow:{{ s.counts.warn }}"></span>
+        <span class="d-ok" style="flex-grow:{{ s.counts.ok }}"></span>
+      </div>
+
+      <div class="mon-stat">
+        <div class="n-bad"><b>{{ s.counts.bad }}</b> High</div>
+        <div class="n-warn"><b>{{ s.counts.warn }}</b> Review</div>
+        <div class="n-ok"><b>{{ s.counts.ok }}</b> Clear</div>
+        <div class="ms-auto text-end"><b style="color:var(--text-dim)">{{ s.total }}</b> Posts</div>
+      </div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="mon-empty">
+  <i class="fa fa-satellite-dish fa-2x mb-3 d-block" style="opacity:.3"></i>
+  <p class="mb-1">No watches yet.</p>
+  <p style="font-size:12px">A watch is a saved monitoring case: keywords to look for, sources to pull from, and how to score what turns up.</p>
+  <button class="btn btn-primary btn-sm mt-2" onclick="document.getElementById('btnNewWatch').click()">Create the first watch</button>
+</div>
+{% endif %}
+
+<!-- New watch modal -->
+<div class="modal fade" id="newWatchModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title">New watch</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Watch name <span style="color:var(--red)">*</span></label>
+            <input class="form-control" id="w-name" placeholder="e.g. APC cyber initiative">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Subject</label>
+            <input class="form-control" id="w-subject" placeholder="Organization or person being monitored">
+          </div>
+          <div class="col-12">
+            <label class="form-label">Keywords</label>
+            <input class="form-control" id="w-keywords" placeholder="APC, cybersecurity, cyber awareness">
+            <div class="form-text">Comma separated. Used to search live sources and to decide whether a post is relevant.</div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Link to profile</label>
+            <select class="form-select" id="w-profile">
+              <option value="">— none —</option>
+              {% for p in profiles %}<option value="{{ p.id }}">{{ p.codename }}</option>{% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <hr style="border-color:var(--border)">
+        <div class="form-label mb-2">Trigger modes</div>
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="mon-toggle release" id="tog-release">
+              <input type="checkbox" id="w-release">
+              <div>
+                <div class="t"><i class="fa fa-bullhorn me-1"></i> Media Release Threat</div>
+                <div class="s">Compare posts against an official release. Detects impersonation, contradictions, and compromised official accounts.</div>
+              </div>
+            </label>
+          </div>
+          <div class="col-md-6">
+            <label class="mon-toggle hunter" id="tog-hunter">
+              <input type="checkbox" id="w-hunter">
+              <div>
+                <div class="t"><i class="fa fa-crosshairs me-1"></i> Digital Hunter</div>
+                <div class="s">Correlate post authors against stored profiles by codename, alias, and social handle. Adds doxxing and threat-language rules.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div id="release-fields" class="mt-3" style="display:none">
+          <label class="form-label">Official release text</label>
+          <textarea class="form-control" id="w-reference" rows="5" placeholder="Paste the official media release here. Posts get scored on how faithfully they match it."></textarea>
+        </div>
+
+        <p class="err text-danger mt-2 mb-0" id="w-err" style="font-size:12px"></p>
+      </div>
+      <div class="modal-footer" style="border-color:var(--border)">
+        <button class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="w-save">Create watch</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const modal = new bootstrap.Modal('#newWatchModal');
+document.getElementById('btnNewWatch').addEventListener('click', () => {
+  document.getElementById('w-err').textContent = '';
+  modal.show();
+});
+
+function syncToggle(id, togId) {
+  const cb = document.getElementById(id), tog = document.getElementById(togId);
+  cb.addEventListener('change', () => {
+    tog.classList.toggle('on', cb.checked);
+    if (id === 'w-release') {
+      document.getElementById('release-fields').style.display = cb.checked ? '' : 'none';
+    }
+  });
+}
+syncToggle('w-release', 'tog-release');
+syncToggle('w-hunter', 'tog-hunter');
+
+document.getElementById('w-save').addEventListener('click', async () => {
+  const name = document.getElementById('w-name').value.trim();
+  if (!name) { document.getElementById('w-err').textContent = 'Give the watch a name.'; return; }
+  const body = {
+    name,
+    subject: document.getElementById('w-subject').value.trim(),
+    keywords: document.getElementById('w-keywords').value.trim(),
+    mode_release: document.getElementById('w-release').checked,
+    mode_hunter: document.getElementById('w-hunter').checked,
+    reference_text: document.getElementById('w-reference').value,
+    profile_id: document.getElementById('w-profile').value || null,
+  };
+  const res = await fetch('{{ url_for("monitor.create_watch") }}', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) { document.getElementById('w-err').textContent = data.error || 'Could not create the watch.'; return; }
+  window.location = '/monitor/' + data.id;
+});
+</script>
+{% endblock %}

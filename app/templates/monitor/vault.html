@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Credential Vault — PROFILER{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitor.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-start flex-wrap gap-2">
+  <div>
+    <a href="{{ url_for('monitor.dashboard_page') }}" style="font-size:12px">
+      <i class="fa fa-arrow-left me-1"></i>Dashboard</a>
+    <h1 class="page-title mt-1"><i class="fa fa-key me-2"></i>Credential Vault</h1>
+    <p class="page-sub mb-0">Encrypted logins for sources that need an account.</p>
+  </div>
+  <div class="d-flex gap-2">
+    <span class="mon-mode-chip {% if unlocked %}release{% else %}std{% endif %}" id="lockChip">
+      <i class="fa fa-{% if unlocked %}lock-open{% else %}lock{% endif %}"></i>
+      {% if unlocked %}Unlocked{% else %}Locked{% endif %}
+    </span>
+    {% if unlocked %}
+    <button class="btn btn-outline btn-sm" id="btnLock">Lock</button>
+    <button class="btn btn-primary btn-sm" id="btnAdd"><i class="fa fa-plus me-1"></i> Add</button>
+    {% endif %}
+  </div>
+</div>
+
+<!-- The honest bit. Worth reading before storing anything. -->
+<div class="card p-3 mb-3" style="border-color:rgba(255,214,0,.35)">
+  <h6 style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--yellow);margin:0 0 8px">
+    <i class="fa fa-triangle-exclamation me-1"></i>Read this before adding an account</h6>
+  <div style="font-size:12.5px;line-height:1.6;color:var(--text-dim)">
+    <p class="mb-2"><b style="color:var(--text)">Use session cookies, not passwords.</b>
+      Log into the platform yourself in a browser, then paste the cookies here. Your
+      password never touches this app, 2FA is already satisfied, and a stolen cookie
+      expires on its own. Storing a password means storing full account control, and
+      the automated login is what actually triggers lockouts.</p>
+    <p class="mb-2"><b style="color:var(--text)">Never use a personal account.</b>
+      Meta, TikTok and LinkedIn detect automated sessions well. Expect a throwaway
+      account to get checkpointed within hours or days. That is the platform working
+      as designed, not a bug here — the fetcher will tell you plainly when it happens.</p>
+    <p class="mb-0"><b style="color:var(--text)">This encrypts the database, not the running app.</b>
+      Secrets are encrypted at rest with a key derived from your passphrase, which is
+      never written to disk. Once unlocked, the key is in memory. It cannot protect
+      you from a compromised machine.</p>
+  </div>
+</div>
+
+{% if not unlocked %}
+<div class="card p-4 mb-3" style="max-width:520px">
+  <h5 style="font-size:15px;font-weight:700;margin:0 0 4px">Unlock the vault</h5>
+  <p class="mon-note">
+    {% if credentials %}Enter the passphrase you used when storing these credentials.
+    {% else %}Choose a passphrase. It derives the encryption key and is never stored,
+    so if you lose it the saved credentials cannot be recovered.{% endif %}
+  </p>
+  <div class="d-flex gap-2">
+    <input type="password" class="form-control form-control-sm" id="pass"
+           placeholder="Passphrase (min 8 characters)" autocomplete="off">
+    <button class="btn btn-primary btn-sm" id="btnUnlock" style="white-space:nowrap">Unlock</button>
+  </div>
+  <p class="text-danger mb-0 mt-2" id="unlockErr" style="font-size:12px"></p>
+  <p class="mon-note mt-2 mb-0">
+    Tip: set <span class="mon-kbd">MONITOR_VAULT_KEY</span> in the environment to
+    unlock automatically at startup.
+  </p>
+</div>
+{% endif %}
+
+{% if not playwright %}
+<div class="mon-gap mb-3">
+  <i class="fa fa-circle-info"></i>
+  <span>Playwright is not installed, so only server-rendered pages can be fetched
+    (mbasic.facebook.com, old.reddit.com and most forums work). For
+    JavaScript-heavy feeds run
+    <span class="mon-kbd">pip install playwright</span> then
+    <span class="mon-kbd">playwright install chromium</span>.</span>
+</div>
+{% endif %}
+
+<div id="credList">
+  {% if not credentials %}
+  <div class="mon-empty">
+    <i class="fa fa-key fa-2x mb-3 d-block" style="opacity:.3"></i>
+    <p class="mb-1">No credentials stored.</p>
+    <p style="font-size:12px">Add session cookies for a platform to collect posts that
+      need a logged-in session.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Add credential -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
+      <div class="modal-header" style="border-color:var(--border)">
+        <h5 class="modal-title">Add a credential</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">Label *</label>
+            <input class="form-control form-control-sm" id="c-label" placeholder="e.g. FB throwaway #1">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Platform</label>
+            <select class="form-select form-select-sm" id="c-platform">
+              {% for key, g in guidance.items() %}
+              <option value="{{ key }}">{{ g.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <div id="platNote" class="mon-gap mt-2"></div>
+
+        <div class="mt-2">
+          <label class="form-label">Credential type</label>
+          <select class="form-select form-select-sm" id="c-kind">
+            <option value="cookies">Session cookies (recommended)</option>
+            <option value="token">API token</option>
+            <option value="password">Username + password (least safe)</option>
+          </select>
+        </div>
+
+        <div id="f-cookies" class="mt-2">
+          <label class="form-label">Cookies</label>
+          <textarea class="form-control form-control-sm" id="c-cookies" rows="6"
+            style="font-family:var(--font-mono);font-size:11.5px"
+            placeholder="c_user=1234567; xs=abc...&#10;&#10;Also accepts cookies.txt or a JSON cookie export."></textarea>
+          <div class="form-text">
+            In your browser: open DevTools → Application → Cookies, or use a
+            "copy cookies" extension. Paste a Cookie header, cookies.txt, or JSON.
+          </div>
+        </div>
+
+        <div id="f-token" class="mt-2" style="display:none">
+          <label class="form-label">API token</label>
+          <input class="form-control form-control-sm" id="c-token" autocomplete="off"
+                 placeholder="Bearer token or app secret">
+        </div>
+
+        <div id="f-password" class="mt-2" style="display:none">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Username</label>
+              <input class="form-control form-control-sm" id="c-username" autocomplete="off">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Password</label>
+              <input type="password" class="form-control form-control-sm" id="c-password" autocomplete="new-password">
+            </div>
+          </div>
+          <div class="mon-gap mt-2">
+            <i class="fa fa-triangle-exclamation"></i>
+            <span>Automated logins are the single most reliable way to get an account
+              locked. Prefer cookies unless the site has no session to copy.</span>
+          </div>
+        </div>
+
+        <div class="mt-2">
+          <label class="form-label">Expires (optional)</label>
+          <input class="form-control form-control-sm" id="c-expires" placeholder="YYYY-MM-DD">
+          <div class="form-text">Records when you expect the session to die, so a stale
+            credential is obvious before a run fails.</div>
+        </div>
+
+        <p class="text-danger mb-0 mt-2" id="addErr" style="font-size:12px"></p>
+      </div>
+      <div class="modal-footer" style="border-color:var(--border)">
+        <button class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="c-save">Store encrypted</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.VAULT = {
+  unlocked: {{ 'true' if unlocked else 'false' }},
+  credentials: {{ credentials|tojson }},
+  guidance: {{ guidance|tojson }}
+};
+</script>
+<script src="{{ url_for('static', filename='js/vault.js') }}"></script>
+{% endblock %}

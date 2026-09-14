@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Media Release Threat Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#18212B; --muted:#5B6675; --faint:#8A94A3; --line:#D6DBE2; --paper:#FFFFFF; --ground:#EEF1F4;
+  --stamp:#2F3F9E;
+  --ok:#0E6E64; --ok-bg:#E2F1EE; --warn:#9A6412; --warn-bg:#FAEFD9; --bad:#A0183A; --bad-bg:#F8E1E7;
+  --sans:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{font:15px/1.5 var(--sans);color:var(--ink);background:var(--ground);-webkit-font-smoothing:antialiased}
+:focus-visible{outline:2px solid var(--stamp);outline-offset:2px}
+button{font:inherit;cursor:pointer}
+input,textarea,select{font:inherit;color:inherit;width:100%;border:1px solid var(--line);border-radius:6px;padding:9px 11px;background:#fff}
+textarea{resize:vertical}
+input:focus,textarea:focus,select:focus{border-color:var(--stamp);outline:none;box-shadow:0 0 0 3px rgba(47,63,158,.15)}
+
+/* Layout */
+.app{display:grid;grid-template-columns:minmax(300px,380px) 1fr;min-height:100vh}
+.source{background:var(--paper);border-right:1px solid var(--line);padding:26px 24px 40px;position:sticky;top:0;height:100vh;overflow:auto}
+main{padding:34px clamp(16px,4vw,44px) 80px;min-width:0;max-width:1040px}
+
+/* Source panel */
+.brand{display:flex;gap:12px;align-items:flex-start;margin-bottom:26px}
+.brand svg{flex:none;margin-top:2px}
+.brand h1{font-size:19px;line-height:1.25;margin:0;font-weight:700;letter-spacing:-.01em}
+.brand p{margin:5px 0 0;color:var(--muted);font-size:13px;line-height:1.45}
+.field{margin-bottom:18px}
+.field label{display:block;font-weight:600;font-size:13.5px;margin-bottom:6px}
+.hint{font-size:12.5px;color:var(--faint);margin-top:5px;line-height:1.4}
+#release{font-family:var(--serif);font-size:15px;line-height:1.6;min-height:190px;border-left:3px solid var(--stamp);border-radius:0 6px 6px 0}
+#accounts{min-height:70px}
+
+/* Summary */
+.summary h2{font-size:30px;line-height:1.15;margin:0;font-weight:700;letter-spacing:-.02em}
+.scan-meta{color:var(--muted);font-size:13.5px;margin:6px 0 18px}
+.dist{display:flex;height:14px;border-radius:3px;overflow:hidden;background:var(--line);gap:2px}
+.dist span{flex-grow:0;flex-basis:0;transition:flex-grow .7s cubic-bezier(.2,.7,.2,1)}
+.dist .d-bad{background:var(--bad)} .dist .d-warn{background:var(--warn)} .dist .d-ok{background:var(--ok)}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.legend button{display:flex;align-items:center;gap:8px;background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 13px;color:var(--ink);font-weight:500;font-size:14px}
+.legend button:hover{border-color:var(--faint)}
+.legend button[aria-pressed="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.legend i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.legend b{font-variant-numeric:tabular-nums}
+
+/* Toolbar */
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:28px 0 14px}
+.toolbar input[type=search]{flex:1;min-width:180px;width:auto}
+.toolbar select{width:auto}
+.btn{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:6px;padding:9px 14px;font-weight:600;white-space:nowrap;font-size:14px}
+.btn:hover{border-color:var(--faint)}
+.btn.primary{background:var(--stamp);border-color:var(--stamp);color:#fff}
+.btn.primary:hover{background:#26348A}
+.btn.quiet{border-color:transparent;background:transparent;color:var(--muted)}
+
+/* Post card */
+.post{background:var(--paper);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:8px;padding:16px 18px 14px;margin-bottom:12px}
+.v-bad{--c:var(--bad);--cbg:var(--bad-bg)}
+.v-warn{--c:var(--warn);--cbg:var(--warn-bg)}
+.v-ok{--c:var(--ok);--cbg:var(--ok-bg)}
+.post-top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}
+.author{font-weight:700}
+.tick{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;background:var(--stamp);color:#fff;font-size:10px;margin-left:6px;vertical-align:1px}
+.meta{display:block;color:var(--muted);font-size:13px;margin-top:1px}
+.score{text-align:right;color:var(--c);line-height:1;flex:none}
+.score b{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;display:block;letter-spacing:-.02em}
+.score span{font-size:12px;color:var(--muted)}
+.text{font-family:var(--serif);font-size:16.5px;line-height:1.6;margin:10px 0 12px;max-width:68ch;overflow-wrap:anywhere}
+.clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.hl-rel{text-decoration:underline;text-decoration-color:rgba(14,110,100,.55);text-decoration-thickness:2px;text-underline-offset:3px}
+.hl-flag{background:var(--bad-bg);color:var(--bad);padding:0 2px;border-radius:2px}
+.lnk{font-family:var(--sans);font-size:13px;padding:1px 6px;border-radius:4px;background:var(--ground);border:1px solid var(--line);word-break:break-all}
+.lnk-bad{background:var(--bad-bg);border-color:#EDB9C6;color:var(--bad)}
+.lnk-ok{background:var(--ok-bg);border-color:#AED6CE;color:var(--ok)}
+.post-foot{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.verdict{background:var(--cbg);color:var(--c);font-weight:700;font-size:12.5px;padding:3px 10px;border-radius:999px}
+.tag{font-size:12.5px;padding:2px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.linkbtn{margin-left:auto;background:none;border:0;color:var(--stamp);font-weight:600;font-size:13.5px;padding:4px 2px}
+.linkbtn:hover{text-decoration:underline}
+
+/* Evidence */
+.evidence{border-top:1px solid var(--line);margin-top:14px;padding-top:16px;display:grid;gap:18px}
+.evidence h3{font-size:14px;margin:0 0 4px}
+.note{font-size:12.5px;color:var(--muted);margin:0 0 10px}
+.keys{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+.links{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.links li{font-size:13.5px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.links small{color:var(--muted)}
+.row{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(120px,1fr) 46px;gap:14px;align-items:center;padding:8px 0;border-bottom:1px dashed var(--line)}
+.lbl{font-weight:600;font-size:13.5px}
+.det{font-size:12.5px;color:var(--muted);display:block;overflow-wrap:anywhere}
+.track{position:relative;height:10px;border-radius:2px;
+  background:linear-gradient(90deg,transparent 29.8%,#BFC7D2 29.8%,#BFC7D2 30.2%,transparent 30.2%,transparent 59.8%,#BFC7D2 59.8%,#BFC7D2 60.2%,transparent 60.2%),var(--ground)}
+.seg{position:absolute;top:0;bottom:0;border-radius:2px}
+.seg.up{background:var(--bad)} .seg.down{background:var(--ok)} .seg.base{background:var(--faint)} .seg.final{background:var(--c)}
+.w{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:13.5px}
+.w.up{color:var(--bad)} .w.down{color:var(--ok)}
+.row.total{border-bottom:0;border-top:1.5px solid var(--ink);margin-top:2px}
+.action{background:var(--cbg);border-radius:6px;padding:12px 14px;font-size:14.5px}
+.action b{color:var(--c)}
+.ai{font-size:14px;border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.ai p{margin:6px 0 0;color:var(--muted)}
+.foot-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.err{color:var(--bad);font-size:13px;min-height:18px;margin:8px 0 0}
+.empty{background:var(--paper);border:1px dashed var(--line);border-radius:8px;padding:34px;text-align:center;color:var(--muted)}
+
+/* Dialogs */
+dialog{border:0;border-radius:10px;padding:0;width:min(580px,94vw);box-shadow:0 24px 70px rgba(24,33,43,.28);color:var(--ink)}
+dialog::backdrop{background:rgba(24,33,43,.45)}
+.dlg{padding:22px 22px 18px}
+.dlg h2{margin:0 0 4px;font-size:19px}
+.dlg > p{margin:0 0 16px;color:var(--muted);font-size:13.5px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.check{display:flex;gap:8px;align-items:center;font-size:14px;font-weight:500}
+.check input{width:auto}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+#np-text,#imp-text{min-height:110px}
+#imp-text{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .source{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+}
+@media (max-width:560px){
+  .row{grid-template-columns:1fr 46px}
+  .track{grid-column:1 / -1;grid-row:2}
+  .grid2{grid-template-columns:1fr}
+  .summary h2{font-size:25px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="source" aria-label="Official source">
+    <div class="brand">
+      <svg width="30" height="34" viewBox="0 0 30 34" aria-hidden="true"><path d="M15 1 28 6v10c0 8.3-5.6 14.6-13 17C7.6 30.6 2 24.3 2 16V6z" fill="#2F3F9E"/><path d="m9.5 17 4 4 7.5-8" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div>
+        <h1>Media Release Threat Monitor</h1>
+        <p>Checks public posts against your official release and flags impersonation, phishing, and false claims.</p>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="org">Organization</label>
+      <input id="org" value="APC Cybersecurity">
+    </div>
+    <div class="field">
+      <label for="release">Official release</label>
+      <textarea id="release">MAKATI CITY — APC Cybersecurity officially announces its new cybersecurity initiative for the 2026–2027 academic year. The program will focus on improving cyber awareness, threat monitoring, and digital security across the APC community.
+
+Workshops and training sessions will be announced on the official APC website and official social media pages. APC will never ask students to pay fees or share passwords through social media.</textarea>
+      <div class="hint">Posts are compared against this text. Edits rescan instantly.</div>
+    </div>
+    <div class="field">
+      <label for="accounts">Official accounts</label>
+      <textarea id="accounts">Facebook apc.cybersecurity
+X @APC_Cyber</textarea>
+      <div class="hint">One per line: platform, then handle.</div>
+    </div>
+    <div class="field">
+      <label for="domains">Official domains</label>
+      <input id="domains" value="apc.edu.ph">
+      <div class="hint">Subdomains count as official.</div>
+    </div>
+    <div class="field">
+      <label for="keywords">Keywords</label>
+      <input id="keywords" value="APC, cybersecurity, cyber awareness">
+      <div class="hint">Separate with commas. Used to decide whether a post is about you.</div>
+    </div>
+  </aside>
+
+  <main>
+    <section class="summary" aria-live="polite">
+      <h2 id="sumTitle">Scanning…</h2>
+      <p class="scan-meta" id="scanMeta"></p>
+      <div class="dist" id="dist" role="img">
+        <span class="d-bad"></span><span class="d-warn"></span><span class="d-ok"></span>
+      </div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Search posts or authors" aria-label="Search posts or authors">
+      <select id="sort" aria-label="Sort posts">
+        <option value="risk">Highest risk first</option>
+        <option value="recent">Newest first</option>
+        <option value="platform">By platform</option>
+      </select>
+      <button class="btn primary" id="btnAdd">Add post</button>
+      <button class="btn" id="btnImport">Import</button>
+      <button class="btn" id="btnExport">Export CSV</button>
+    </div>
+
+    <div id="list"></div>
+  </main>
+</div>
+
+<dialog id="dlgAdd" aria-labelledby="addTitle">
+  <div class="dlg">
+    <h2 id="addTitle">Add a post</h2>
+    <p>Paste a post you found. Links inside the text are checked automatically.</p>
+    <div class="grid2">
+      <div class="field"><label for="np-platform">Platform</label>
+        <select id="np-platform"><option>Facebook</option><option>X</option><option>Instagram</option><option>TikTok</option><option>YouTube</option><option>News site</option><option>Other</option></select></div>
+      <div class="field"><label for="np-author">Display name</label><input id="np-author" placeholder="e.g. APC Cyber Updates"></div>
+      <div class="field"><label for="np-handle">Handle</label><input id="np-handle" placeholder="@handle"></div>
+      <div class="field"><label for="np-url">Link in post (optional)</label><input id="np-url" placeholder="https://"></div>
+    </div>
+    <div class="field"><label for="np-text">Post text</label><textarea id="np-text"></textarea></div>
+    <label class="check"><input type="checkbox" id="np-verified"> Verified badge on the platform</label>
+    <p class="err" id="np-err"></p>
+    <div class="dlg-actions">
+      <button class="btn quiet" data-close>Cancel</button>
+      <button class="btn primary" id="np-save">Add and scan</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlgImport" aria-labelledby="impTitle">
+  <div class="dlg">
+    <h2 id="impTitle">Import posts</h2>
+    <p>Paste a JSON array. Each post needs <b>author</b> and <b>text</b>; <b>platform</b>, <b>handle</b>, <b>verified</b>, and <b>url</b> are optional.</p>
+    <textarea id="imp-text" placeholder='[{"platform":"X","author":"Name","handle":"@name","verified":false,"text":"..."}]'></textarea>
+    <label class="check" style="margin-top:10px"><input type="checkbox" id="imp-replace"> Replace current posts</label>
+    <p class="err" id="imp-err"></p>
+    <div class="dlg-actions">
+      <button class="btn quiet" id="imp-sample">Restore sample posts</button>
+      <button class="btn quiet" data-close>Cancel</button>
+      <button class="btn primary" id="imp-save">Import posts</button>
+    </div>
+  </div>
+</dialog>
+
+<script>
+/* ---------- Sample data ---------- */
+const MIN = 60000;
+const SAMPLE = [
+  {platform:"Facebook",author:"APC Cybersecurity",handle:"apc.cybersecurity",verified:true,ago:180,
+   text:"APC Cybersecurity officially announces its new cybersecurity initiative for AY 2026–2027, focused on improving cyber awareness, threat monitoring, and digital security. Details: https://www.apc.edu.ph/news/cyber-initiative"},
+  {platform:"X",author:"TechBalita PH",handle:"techbalitaph",verified:true,ago:95,
+   text:"APC Cybersecurity launches a new cybersecurity initiative this school year, focusing on digital security and threat monitoring for students. https://techbalita.ph/tech/apc-cyber-initiative"},
+  {platform:"Facebook",author:"APC Cyber Security Official",handle:"apc.cybersecurity.official",verified:false,ago:42,
+   text:"APC Cybersecurity is giving away FREE cybersecurity certification vouchers!! Register here immediately, first 50 only: http://apc-cyber-vouchers.xyz/register"},
+  {platform:"X",author:"RandomUser2026",handle:"randomuser2026",verified:false,ago:18,
+   text:"BREAKING: APC Cybersecurity cancelled the entire program. More details coming soon."},
+  {platform:"Facebook",author:"APC Cybersecurity Support",handle:"apccyber.support",verified:false,ago:7,
+   text:"Your APC student account will be deactivated. Verify your login within 24 hours to keep access: bit.ly/apc-verify-now"},
+  {platform:"Instagram",author:"Mika Santos",handle:"mikasantos.dev",verified:false,ago:260,
+   text:"Proud that APC is investing in cyber awareness and threat monitoring. Can't wait to join the program."},
+  {platform:"X",author:"APC Cybersecurity",handle:"APC_Cyber",verified:true,ago:3,
+   text:"We're giving back to our community! Send ₱500 via GCash to 0917 000 0000 to get your FREE certification voucher. Limited slots!"},
+  {platform:"TikTok",author:"PH Cyber Watch",handle:"phcyberwatch",verified:false,ago:25,
+   text:"APC Cybersecurity hacked?? Reports say student data was leaked. Stay tuned for updates."},
+  {platform:"Facebook",author:"Makati Campus Updates",handle:"makaticampusupdates",verified:false,ago:130,
+   text:"APC's new cybersecurity initiative focuses on digital security and cyber awareness for the APC community. Full release on the school site: https://apc.edu.ph/news"},
+  {platform:"X",author:"Kuya Jun Tech Tips",handle:"kuyajuntech",verified:false,ago:55,
+   text:"Heard APC is launching something for cybersecurity? Anyone have the link to register? DM me if you know."},
+  {platform:"Facebook",author:"APC Cybersecurity Alumni",handle:"apccyber.alumni",verified:false,ago:300,
+   text:"Congrats to APC Cybersecurity on the new initiative! Alumni, join the cyber awareness workshops."}
+];
+
+/* ---------- Helpers ---------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const clamp = (v, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+function ago(t){ const m = Math.max(0, Math.round((Date.now() - t) / MIN)); if (m < 1) return "just now"; if (m < 60) return `${m} min ago`; const h = Math.round(m / 60); return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`; }
+
+const STOP = new Set("the and for with from this that its are was were been will has have our their your into about more than which who what can not but all also via get got any".split(" "));
+function stem(w){
+  if (w.length > 5 && w.endsWith("ing")) w = w.slice(0, -3);
+  else if (w.length > 4 && w.endsWith("ied")) w = w.slice(0, -3) + "y";
+  else if (w.length > 4 && w.endsWith("ed")) w = w.slice(0, -2);
+  else if (w.length > 4 && w.endsWith("ies")) w = w.slice(0, -3) + "y";
+  else if (w.length > 4 && /(s|x|z|ch|sh)es$/.test(w)) w = w.slice(0, -2);
+  else if (w.length > 3 && w.endsWith("s") && !/(ss|us|is)$/.test(w)) w = w.slice(0, -1);
+  if (w.length > 4 && w.endsWith("e")) w = w.slice(0, -1);
+  return w;
+}
+const LINK_SRC = "(?:https?:\\/\\/|www\\.)[^\\s<>\"]+|\\b(?:bit\\.ly|tinyurl\\.com|t\\.co|cutt\\.ly|rb\\.gy|is\\.gd|goo\\.gl|s\\.id|tiny\\.cc)\\/[^\\s<>\"]+";
+const linkRe = () => new RegExp(LINK_SRC, "gi");
+function tokens(t){
+  return (String(t).toLowerCase().replace(linkRe(), " ").match(/[a-z0-9]+/g) || [])
+    .filter(w => w.length > 2 && !STOP.has(w)).map(stem);
+}
+const GLYPH = {"0":"o","1":"l","3":"e","4":"a","5":"s","7":"t","@":"a","$":"s","|":"l"};
+const FILLER = new Set(["official","page","team","real","the","ph","inc","hq","admin","account"]);
+function normName(s){
+  return String(s || "").replace(/^@/, "").toLowerCase().replace(/[013457@$|]/g, c => GLYPH[c])
+    .split(/[^a-z0-9]+/).filter(w => w && !FILLER.has(w)).join("");
+}
+function lev(a, b){
+  const d = Array.from({length: b.length + 1}, (_, i) => i);
+  for (let i = 1; i <= a.length; i++){
+    let prev = d[0]; d[0] = i;
+    for (let j = 1; j <= b.length; j++){
+      const tmp = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return d[b.length];
+}
+const sim = (a, b) => (a && b) ? 1 - lev(a, b) / Math.max(a.length, b.length) : 0;
+
+/* ---------- Detection rules ---------- */
+const SHORTENERS = new Set(["bit.ly","tinyurl.com","t.co","cutt.ly","rb.gy","is.gd","goo.gl","s.id","tiny.cc"]);
+const RISKY_TLD = /\.(xyz|top|click|shop|live|online|site|icu|buzz|loan|win|rest|cyou|monster|info)$/;
+const SCAM = [
+  [/\bfree\b/i, "free"],
+  [/\bgiv(e|ing) ?aways?\b/i, "giveaway"],
+  [/\bvouchers?\b/i, "voucher"],
+  [/\bclaim\b/i, "claim"],
+  [/\b(prizes?|winners?|raffle|rewards?)\b/i, "prize"],
+  [/\b(limited slots?|first \d+( only)?)\b/i, "scarcity"],
+  [/\b(gcash|maya|paymaya)\b/i, "e-wallet"],
+  [/\b(verify|log ?in|password|otp)\b/i, "credential request"],
+  [/\bdeactivat\w*/i, "deactivation threat"],
+  [/\b(dm|pm) (us|me)\b/i, "move to private messages"],
+  [/\bregister\b/i, "registration link"]
+];
+const MONEY = /(₱|\bphp\s?|\bpesos?\s)\s?\d[\d,]*|\bsend\s+(money|payment|₱|php)|\bprocessing fee\b/i;
+const URGENCY = /\b(immediately|urgent(ly)?|asap|hurry|last chance|today only|act now|within \d+ ?(hours?|hrs?|minutes?|mins?))\b/i;
+const CLAIMS = [
+  [/\bcancel+(ed|s|ation)?\b/i, "cancelled"], [/\bpostpone[ds]?\b/i, "postponed"],
+  [/\bsuspen(d|ded|ds|sion)\b/i, "suspended"], [/\bterminat(ed|es|ion)\b/i, "terminated"],
+  [/\bshut(ting)? down\b/i, "shut down"], [/\bhack(ed|s)?\b/i, "hacked"],
+  [/\bbreach(ed|es)?\b/i, "breach"], [/\bleak(ed|s)?\b/i, "leaked"],
+  [/\bfake\b/i, "fake"], [/\bscam\b/i, "scam"], [/\barrest(ed)?\b/i, "arrested"], [/\bresign(ed|s)?\b/i, "resigned"]
+];
+const BASE = 25;
+const VERD = { bad:{label:"High risk", color:"var(--bad)"}, warn:{label:"Needs review", color:"var(--warn)"}, ok:{label:"Likely authentic", color:"var(--ok)"} };
+
+function readConfig(){
+  const org = $("#org").value.trim();
+  const release = $("#release").value;
+  const accLines = $("#accounts").value.split("\n").map(l => l.trim()).filter(Boolean);
+  const accounts = new Set(), handles = [];
+  accLines.forEach(l => {
+    const [pl, ...rest] = l.split(/\s+/);
+    const h = rest.join("").replace(/^@/, "");
+    if (!h) return;
+    accounts.add(`${pl.toLowerCase()}:${h.toLowerCase()}`);
+    handles.push({ n: normName(h), raw: "@" + h });
+  });
+  const domains = $("#domains").value.split(/[,\s]+/)
+    .map(d => d.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "")).filter(Boolean);
+  const keywords = $("#keywords").value.split(",").map(k => k.trim().toLowerCase()).filter(Boolean);
+  const relTokens = tokens(release);
+  return { org, orgN: normName(org), orgFirst: (org.toLowerCase().match(/[a-z0-9]+/) || [""])[0],
+    release, accounts, handles, domains, keywords, relSet: new Set(relTokens) };
+}
+
+function analyzeLink(raw, c){
+  const display = raw.replace(/[),.!?;:'"]+$/, "");
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(display) ? display : "https://" + display); } catch { return null; }
+  const host = u.hostname.toLowerCase().replace(/^www\./, "");
+  const official = c.domains.some(d => host === d || host.endsWith("." + d));
+  const flags = [];
+  if (!official){
+    if (/^http:\/\//i.test(display)) flags.push({ label:`${host} uses unencrypted http`, w:10 });
+    if (SHORTENERS.has(host)) flags.push({ label:`${host} is a shortener that hides the real destination`, w:15 });
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) flags.push({ label:"Link points to a raw IP address", w:20 });
+    if (host.includes("xn--")) flags.push({ label:`${host} uses punycode, a sign of look-alike characters`, w:20 });
+    if (RISKY_TLD.test(host)) flags.push({ label:`${host} uses a domain ending common in throwaway sites`, w:10 });
+    const flat = host.replace(/[^a-z0-9]/g, "");
+    if ((c.orgN.length >= 5 && flat.includes(c.orgN)) || (c.orgFirst.length >= 3 && host.split(/[.-]/).includes(c.orgFirst)))
+      flags.push({ label:`${host} borrows your name but isn't an official domain`, w:25, phish:true });
+    if (/(login|log-in|signin|verify|register|claim|voucher|reward|otp|account|update)/i.test(u.pathname + u.search))
+      flags.push({ label:`The path ${u.pathname} asks for sign-up or credentials`, w:10, phish:true });
+  }
+  return { display, host, official, flags };
+}
+
+function analyze(p, c){
+  const signals = [], types = new Set(), flagWords = new Set();
+  const add = (label, detail, w) => signals.push({ label, detail, w });
+  const text = p.text || "";
+  const flagFrom = re => (text.match(new RegExp(re.source, "gi")) || [])
+    .forEach(m => m.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).forEach(w => flagWords.add(w)));
+  const handle = (p.handle || "").replace(/^@/, "");
+  const official = c.accounts.has(`${(p.platform || "").toLowerCase()}:${handle.toLowerCase()}`);
+
+  // Relevance
+  const kwHits = c.keywords.filter(k => new RegExp(`\\b${escRe(k)}\\b`, "i").test(text));
+  const relevant = official || kwHits.length > 0 || (c.orgN && normName(text).includes(c.orgN));
+
+  // Account identity
+  if (official){
+    add("Official account", `${p.platform} @${handle} is on your official list`, -30);
+  } else {
+    if (p.verified) add("Verified by the platform", "Has a verified badge, but isn't one of your accounts", -5);
+    const nameN = normName(p.author), handleN = normName(handle);
+    let best = 0, target = "";
+    const targets = [{ n: c.orgN, raw: c.org }, ...c.handles];
+    for (const t of targets){
+      if (!t.n) continue;
+      let s = Math.max(sim(nameN, t.n), sim(handleN, t.n));
+      if (t.n.length >= 5 && (nameN.includes(t.n) || handleN.includes(t.n))) s = Math.max(s, 0.9);
+      if (s > best){ best = s; target = t.raw; }
+    }
+    if (best >= 0.8){
+      add("Imitates your name", `"${p.author}" is ${Math.round(best * 100)}% similar to ${target} but isn't on your official list`, 30);
+      types.add("Impersonation");
+    } else if (/official/i.test(`${p.author} ${handle}`)){
+      add("Claims to be official", 'Uses "official" without being on your list', 10);
+      types.add("Impersonation");
+    }
+  }
+
+  // Links
+  const raws = [...(text.match(linkRe()) || [])];
+  if (p.url) raws.push(p.url);
+  const links = [], seen = new Set();
+  raws.forEach(r => { const L = analyzeLink(r, c); if (L && !seen.has(L.display)){ seen.add(L.display); links.push(L); } });
+  const badFlags = links.flatMap(l => l.flags);
+  if (links.some(l => l.official)) add("Links to your domain", "Points readers to an official source", -10);
+  if (badFlags.length){
+    add("Risky link", badFlags.map(f => f.label).join("; "), Math.min(badFlags.reduce((s, f) => s + f.w, 0), 45));
+    if (badFlags.some(f => f.phish)) types.add("Phishing");
+  }
+
+  // Scam language
+  const scamHits = SCAM.filter(([re]) => re.test(text));
+  if (scamHits.length){
+    scamHits.forEach(([re]) => flagFrom(re));
+    add("Scam language", cap(scamHits.map(h => h[1]).join(", ")), Math.min(scamHits.length * 8, 30));
+    types.add("Scam");
+  }
+  const moneyHit = MONEY.test(text);
+  if (moneyHit){ flagFrom(MONEY); add("Asks for money", "Requests a payment or transfer", 15); types.add("Scam"); }
+
+  // Urgency and sensationalism
+  const urg = [...new Set((text.match(new RegExp(URGENCY.source, "gi")) || []).map(s => s.toLowerCase()))];
+  if (urg.length){ flagFrom(URGENCY); add("Pressure to act fast", urg.map(u => `"${u}"`).join(", "), Math.min(urg.length * 8, 16)); }
+  if (/\bbreaking\b/i.test(text)){ flagFrom(/\bbreaking\b/i); add("Breaking-news framing", "Presents an unconfirmed claim as breaking news", 8); }
+  const letters = text.replace(/[^A-Za-z]/g, ""), caps = (text.match(/[A-Z]/g) || []).length, bangs = (text.match(/!/g) || []).length;
+  if (bangs >= 2 || (letters.length > 20 && caps / letters.length > 0.35))
+    add("Sensational formatting", bangs >= 2 ? `${bangs} exclamation marks` : "Mostly capital letters", 6);
+
+  // Claims the release doesn't make
+  const claims = CLAIMS.filter(([re]) => re.test(text) && !re.test(c.release));
+  if (claims.length){
+    claims.forEach(([re]) => flagFrom(re));
+    add("Contradicts the release", `Says ${claims.map(h => `"${h[1]}"`).join(", ")}, which the release doesn't mention`, Math.min(30 + (claims.length - 1) * 5, 40));
+    types.add("Misinformation");
+  }
+
+  // Official account behaving out of character
+  if (official && (claims.length || scamHits.length || badFlags.length || moneyHit)){
+    add("Possible account compromise", "An official account is posting content that breaks from the release", 30);
+    types.add("Account compromise");
+  }
+
+  // Fidelity to the release
+  const pt = [...new Set(tokens(text))];
+  const coverage = pt.length ? pt.filter(t => c.relSet.has(t)).length / pt.length : 0;
+  if (relevant && !claims.length){
+    const pct = Math.round(coverage * 100);
+    if (coverage >= 0.75) add("Matches the release", `${pct}% of its key words appear in the release`, -15);
+    else if (coverage >= 0.45) add("Paraphrases the release", `${pct}% of its key words appear in the release`, -6);
+    else if (pt.length >= 6 && coverage < 0.2) add("Off-message", `Mentions you, but only ${pct}% of its key words appear in the release`, 6);
+  }
+
+  const raw = BASE + signals.reduce((s, x) => s + x.w, 0);
+  const score = Math.round(clamp(raw));
+  const verdict = score >= 60 ? "bad" : score >= 30 ? "warn" : "ok";
+  if (!relevant) types.add("Off-topic");
+  if (verdict === "ok" && relevant) types.add(official ? "Official" : coverage >= 0.45 ? "Faithful echo" : "Relevant mention");
+
+  return { score, verdict, signals, types, links, flagWords, relevant, official, coverage };
+}
+
+function recommend(a, p){
+  if (a.types.has("Account compromise")) return "Secure the official account now: change the password, end other active sessions, then remove the post and explain what happened.";
+  if (a.verdict === "bad"){
+    const parts = [];
+    if (a.types.has("Impersonation")) parts.push(`report the account to ${p.platform} for impersonation`);
+    if (a.types.has("Phishing") || a.types.has("Scam")) parts.push("warn followers not to click, register, or pay");
+    if (a.types.has("Misinformation")) parts.push("publish a correction that links the official release");
+    if (!parts.length) parts.push("review manually and consider reporting");
+    return cap(parts.join(", ")) + ".";
+  }
+  if (a.verdict === "warn") return "Confirm with the comms team before responding. Nothing here is conclusive on its own.";
+  return "No action needed.";
+}
+
+/* ---------- State ---------- */
+let seq = 0;
+const fromRaw = p => ({ id: "p" + (seq++), platform: p.platform || "Other", author: String(p.author), handle: String(p.handle || "").replace(/^@/, ""),
+  verified: !!p.verified, text: String(p.text), url: p.url ? String(p.url) : "", time: p.time || Date.now() - (p.ago || 0) * MIN });
+const state = { posts: SAMPLE.map(fromRaw), filter: "all", sort: "risk", q: "", open: new Set(), ai: {}, results: new Map(), scannedAt: null };
+
+/* ---------- Rendering ---------- */
+function highlight(text, a){
+  const re = new RegExp(`(${LINK_SRC})|([A-Za-z0-9\\u00C0-\\u024F']+)|([^A-Za-z0-9\\u00C0-\\u024F']+)`, "gi");
+  let out = "", m;
+  while ((m = re.exec(text))){
+    if (m[1]){
+      const L = a.links.find(l => m[1].startsWith(l.display));
+      const cls = L ? (L.official ? "lnk-ok" : L.flags.length ? "lnk-bad" : "") : "";
+      out += `<span class="lnk ${cls}">${esc(m[1])}</span>`;
+    } else if (m[2]){
+      const w = m[2].toLowerCase().replace(/'/g, "");
+      if (a.flagWords.has(w)) out += `<mark class="hl-flag">${esc(m[2])}</mark>`;
+      else if (w.length > 2 && !STOP.has(w) && a.relevant && a.relSetRef.has(stem(w))) out += `<span class="hl-rel">${esc(m[2])}</span>`;
+      else out += esc(m[2]);
+    } else out += esc(m[3]);
+  }
+  return out;
+}
+
+function ledger(a){
+  const pos = (s, e) => { const l = clamp(Math.min(s, e)); return `left:${l}%;width:${Math.max(clamp(Math.max(s, e)) - l, 0.8)}%`; };
+  let run = 0, html = "";
+  const rows = [{ label:"Starting point", detail:"Every post begins here", w:BASE, base:true }, ...a.signals];
+  rows.forEach(r => {
+    const s = run, e = run + r.w; run = e;
+    const dir = r.base ? "base" : r.w > 0 ? "up" : "down";
+    html += `<div class="row"><div><span class="lbl">${esc(r.label)}</span><span class="det">${esc(r.detail)}</span></div>
+      <div class="track"><span class="seg ${dir}" style="${pos(s, e)}"></span></div>
+      <div class="w ${r.base ? "" : dir}">${r.w > 0 && !r.base ? "+" : ""}${r.w}</div></div>`;
+  });
+  html += `<div class="row total"><div><span class="lbl">Risk score</span><span class="det">${run !== a.score ? `Raw total ${run}, capped to 0–100` : "Sum of the rows above"}</span></div>
+    <div class="track"><span class="seg final" style="${pos(0, a.score)}"></span></div><div class="w" style="color:var(--c)">${a.score}</div></div>`;
+  return html;
+}
+
+function aiBlock(id){
+  const s = state.ai[id];
+  if (!s) return `<button class="btn" data-act="ai">Get a second opinion from Claude</button>`;
+  if (s.loading) return `<p class="note" style="margin:0">Asking Claude…</p>`;
+  if (s.error) return `<div class="ai"><b style="color:var(--bad)">No second opinion.</b><p>${esc(s.error)} The score above still stands.</p></div><button class="btn" data-act="ai">Try again</button>`;
+  const d = s.data, map = { high_risk:"bad", needs_review:"warn", likely_authentic:"ok" }, v = VERD[map[d.verdict]] || VERD.warn;
+  return `<div class="ai"><b>Claude says: <span style="color:${v.color}">${v.label}</span></b>${d.threat_type ? `, ${esc(d.threat_type)}` : ""}
+    <p>${esc(d.rationale || "")}</p></div>`;
+}
+
+function evidence(p, a){
+  const links = a.links.length ? `<div><h3>Links</h3><ul class="links">${a.links.map(l =>
+    `<li><span class="lnk ${l.official ? "lnk-ok" : l.flags.length ? "lnk-bad" : ""}">${esc(l.host)}</span>
+     <small>${l.official ? "Official domain" : l.flags.length ? esc(l.flags.map(f => f.label).join("; ")) : "External, no red flags"}</small></li>`).join("")}</ul>
+     <p class="note" style="margin-top:8px">Links are shown as text only and never opened.</p></div>` : "";
+  return `<div class="evidence">
+    <div class="keys"><span><span class="hl-rel">Underlined</span> words also appear in the release</span><span><mark class="hl-flag">Marked</mark> words triggered a rule</span></div>
+    ${links}
+    <div><h3>How the score was built</h3>
+      <p class="note">Red bars add risk, green bars count as evidence it's genuine. Ticks mark the review (30) and high-risk (60) thresholds.</p>
+      ${ledger(a)}</div>
+    <div class="action"><b>Recommended:</b> ${esc(recommend(a, p))}</div>
+    <div class="foot-actions">${aiBlock(p.id)}<button class="btn quiet" data-act="remove" style="margin-left:auto">Remove post</button></div>
+  </div>`;
+}
+
+function card(p, a){
+  const open = state.open.has(p.id);
+  return `<article class="post v-${a.verdict}" data-id="${p.id}">
+    <div class="post-top">
+      <div>
+        <span class="author">${esc(p.author)}</span>${p.verified ? '<span class="tick" title="Verified on platform" aria-label="Verified on platform">✓</span>' : ""}
+        <span class="meta">${p.handle ? "@" + esc(p.handle) + " on " : ""}${esc(p.platform)}, ${ago(p.time)}</span>
+      </div>
+      <div class="score" aria-label="Risk score ${a.score} out of 100"><b>${a.score}</b><span>risk / 100</span></div>
+    </div>
+    <p class="text ${open ? "" : "clamp"}">${highlight(p.text, a)}</p>
+    <div class="post-foot">
+      <span class="verdict">${VERD[a.verdict].label}</span>
+      ${[...a.types].map(t => `<span class="tag">${esc(t)}</span>`).join("")}
+      <button class="linkbtn" data-act="toggle" aria-expanded="${open}">${open ? "Hide evidence" : "Show evidence"}</button>
+    </div>
+    ${open ? evidence(p, a) : ""}
+  </article>`;
+}
+
+function render(){
+  const c = readConfig();
+  state.results.clear();
+  state.posts.forEach(p => { const a = analyze(p, c); a.relSetRef = c.relSet; state.results.set(p.id, a); });
+  state.scannedAt = new Date();
+
+  const counts = { bad:0, warn:0, ok:0 };
+  state.results.forEach(a => counts[a.verdict]++);
+  const total = state.posts.length;
+
+  $("#sumTitle").textContent = !total ? "No posts yet"
+    : counts.bad ? `${counts.bad} ${counts.bad === 1 ? "post needs" : "posts need"} action now`
+    : counts.warn ? `${counts.warn} ${counts.warn === 1 ? "post needs" : "posts need"} a closer look`
+    : "Every post matches the release";
+  $("#scanMeta").textContent = total ? `Checked ${total} posts against your release at ${state.scannedAt.toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}.` : "Add or import posts to start checking.";
+
+  const dist = $("#dist");
+  dist.setAttribute("aria-label", `${counts.bad} high risk, ${counts.warn} needs review, ${counts.ok} likely authentic`);
+  requestAnimationFrame(() => {
+    dist.querySelector(".d-bad").style.flexGrow = counts.bad;
+    dist.querySelector(".d-warn").style.flexGrow = counts.warn;
+    dist.querySelector(".d-ok").style.flexGrow = counts.ok;
+  });
+
+  $("#legend").innerHTML = [["all","All posts",total,null], ["bad",VERD.bad.label,counts.bad,VERD.bad.color],
+    ["warn",VERD.warn.label,counts.warn,VERD.warn.color], ["ok",VERD.ok.label,counts.ok,VERD.ok.color]]
+    .map(([k, l, n, col]) => `<button data-filter="${k}" aria-pressed="${state.filter === k}">${col ? `<i style="background:${col}"></i>` : ""}${l} <b>${n}</b></button>`).join("");
+
+  const q = state.q.toLowerCase();
+  let list = state.posts.filter(p => {
+    const a = state.results.get(p.id);
+    return (state.filter === "all" || a.verdict === state.filter) &&
+      (!q || `${p.author} ${p.handle} ${p.text} ${p.platform}`.toLowerCase().includes(q));
+  });
+  if (state.sort === "risk") list.sort((x, y) => state.results.get(y.id).score - state.results.get(x.id).score);
+  else if (state.sort === "recent") list.sort((x, y) => y.time - x.time);
+  else list.sort((x, y) => x.platform.localeCompare(y.platform) || state.results.get(y.id).score - state.results.get(x.id).score);
+
+  $("#list").innerHTML = list.length ? list.map(p => card(p, state.results.get(p.id))).join("")
+    : `<div class="empty">${total ? "No posts in this view. Pick another filter or clear the search." : "No posts to check. Add one, or import a batch as JSON."}</div>`;
+}
+
+/* ---------- Claude second opinion ---------- */
+async function askClaude(id){
+  const p = state.posts.find(x => x.id === id); if (!p) return;
+  const c = readConfig(), a = state.results.get(id);
+  state.ai[id] = { loading:true }; render();
+  const prompt = `You are a trust-and-safety analyst verifying social media posts against an organization's official media release.
+
+Organization: ${c.org}
+Official release:
+"""${c.release}"""
+Official accounts: ${[...c.accounts].join(", ") || "none listed"}
+Official domains: ${c.domains.join(", ") || "none listed"}
+
+Post on ${p.platform} by "${p.author}" (@${p.handle || "unknown"}, ${p.verified ? "platform-verified" : "not verified"}):
+"""${p.text}"""${p.url ? `\nLinked URL: ${p.url}` : ""}
+
+A rule-based scanner rated it "${VERD[a.verdict].label}" with a risk score of ${a.score}/100.
+
+Give an independent judgment. Respond ONLY with a JSON object, no markdown:
+{"verdict":"likely_authentic"|"needs_review"|"high_risk","threat_type":"short label or empty string","rationale":"max 45 words, plain language"}`;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:1000, messages:[{ role:"user", content:prompt }] })
+    });
+    if (!res.ok) throw new Error(`The request failed with status ${res.status}.`);
+    const data = await res.json();
+    const txt = (data.content || []).map(b => b.text || "").join("").replace(/```json|```/g, "").trim();
+    state.ai[id] = { data: JSON.parse(txt) };
+  } catch (e) {
+    state.ai[id] = { error: e instanceof SyntaxError ? "Claude's reply couldn't be read." : (e.message || "Claude couldn't be reached.") };
+  }
+  render();
+}
+
+/* ---------- Export ---------- */
+function exportCSV(){
+  const safe = v => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
+  const rows = [["platform","author","handle","verified","risk_score","verdict","threats","signals","links","text"]];
+  state.posts.forEach(p => {
+    const a = state.results.get(p.id);
+    rows.push([p.platform, p.author, p.handle, p.verified, a.score, VERD[a.verdict].label, [...a.types].join("; "),
+      a.signals.map(s => `${s.label} (${s.w > 0 ? "+" : ""}${s.w})`).join("; "), a.links.map(l => l.display).join(" "), p.text]);
+  });
+  const blob = new Blob([rows.map(r => r.map(safe).join(",")).join("\n")], { type:"text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `release-monitor-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+/* ---------- Events ---------- */
+const rescan = debounce(() => { state.ai = {}; render(); }, 250);
+["org","release","accounts","domains","keywords"].forEach(id => $("#" + id).addEventListener("input", rescan));
+$("#q").addEventListener("input", debounce(e => { state.q = e.target.value; render(); }, 150));
+$("#sort").addEventListener("change", e => { state.sort = e.target.value; render(); });
+$("#legend").addEventListener("click", e => { const b = e.target.closest("[data-filter]"); if (b){ state.filter = b.dataset.filter; render(); } });
+$("#list").addEventListener("click", e => {
+  const btn = e.target.closest("[data-act]"); if (!btn) return;
+  const id = btn.closest(".post").dataset.id;
+  if (btn.dataset.act === "toggle"){ state.open.has(id) ? state.open.delete(id) : state.open.add(id); render();
+    document.querySelector(`.post[data-id="${id}"] [data-act="toggle"]`)?.focus(); }
+  if (btn.dataset.act === "remove"){ state.posts = state.posts.filter(p => p.id !== id); state.open.delete(id); render(); }
+  if (btn.dataset.act === "ai") askClaude(id);
+});
+document.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", () => b.closest("dialog").close()));
+
+$("#btnAdd").addEventListener("click", () => { $("#np-err").textContent = ""; $("#dlgAdd").showModal(); $("#np-author").focus(); });
+$("#np-save").addEventListener("click", () => {
+  const author = $("#np-author").value.trim(), text = $("#np-text").value.trim();
+  if (!author || !text){ $("#np-err").textContent = "Add a display name and the post text to scan it."; return; }
+  const p = fromRaw({ platform:$("#np-platform").value, author, handle:$("#np-handle").value.trim(), verified:$("#np-verified").checked, text, url:$("#np-url").value.trim() });
+  state.posts.unshift(p); state.open.add(p.id); state.filter = "all";
+  ["np-author","np-handle","np-url","np-text"].forEach(i => $("#" + i).value = ""); $("#np-verified").checked = false;
+  $("#dlgAdd").close(); render();
+});
+
+$("#btnImport").addEventListener("click", () => { $("#imp-err").textContent = ""; $("#dlgImport").showModal(); $("#imp-text").focus(); });
+$("#imp-save").addEventListener("click", () => {
+  let data;
+  try { data = JSON.parse($("#imp-text").value); } catch { $("#imp-err").textContent = "That isn't valid JSON. Check for missing quotes or commas."; return; }
+  const arr = Array.isArray(data) ? data : Array.isArray(data?.posts) ? data.posts : null;
+  if (!arr){ $("#imp-err").textContent = "Expected an array of posts, or an object with a posts array."; return; }
+  const ok = arr.filter(p => p && p.author && p.text).map(fromRaw);
+  if (!ok.length){ $("#imp-err").textContent = "None of the entries had both author and text."; return; }
+  state.posts = $("#imp-replace").checked ? ok : [...ok, ...state.posts];
+  state.filter = "all"; $("#imp-text").value = ""; $("#dlgImport").close(); render();
+});
+$("#imp-sample").addEventListener("click", () => { state.posts = SAMPLE.map(fromRaw); state.open.clear(); state.ai = {}; state.filter = "all"; $("#dlgImport").close(); render(); });
+$("#btnExport").addEventListener("click", exportCSV);
+
+render();
+</script>
+</body>
+</html>

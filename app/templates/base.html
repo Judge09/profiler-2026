@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}PROFILER{% endblock %}</title>
+
+  <!-- Bootstrap 5 (dark) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <!-- Font Awesome 6 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <!-- JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- App CSS -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+
+  {% block head %}{% endblock %}
+</head>
+<body>
+<div class="app-layout">
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-name">PROFILER</div>
+      <div class="brand-sub">OSINT &amp; SOCMINT</div>
+    </div>
+
+    <div class="sidebar-nav">
+      <div class="nav-section-label">Intelligence</div>
+
+      <a href="{{ url_for('profiles.list_profiles') }}"
+         class="nav-link {% if request.blueprint == 'profiles' %}active{% endif %}">
+        <i class="fa fa-id-card"></i>
+        <span>Profiles</span>
+      </a>
+
+      <a href="{{ url_for('linkmap.list_maps') }}"
+         class="nav-link {% if request.blueprint == 'linkmap' %}active{% endif %}">
+        <i class="fa fa-diagram-project"></i>
+        <span>Link Mapper</span>
+      </a>
+
+      <div class="nav-section-label">OSINT Tools</div>
+
+      <a href="{{ url_for('dorking.index') }}"
+         class="nav-link {% if request.blueprint == 'dorking' %}active{% endif %}">
+        <i class="fa fa-magnifying-glass"></i>
+        <span>Dork Engine</span>
+      </a>
+
+
+      <a href="{{ url_for('monitor.dashboard_page') }}"
+         class="nav-link {% if request.blueprint == 'monitor' and request.endpoint == 'monitor.dashboard_page' %}active{% endif %}">
+        <i class="fa fa-gauge-high"></i>
+        <span>Dashboard</span>
+      </a>
+
+      <a href="{{ url_for('monitor.list_watches') }}"
+         class="nav-link {% if request.blueprint == 'monitor' and request.endpoint != 'monitor.dashboard_page' and request.endpoint != 'monitor.vault_page' %}active{% endif %}">
+        <i class="fa fa-satellite-dish"></i>
+        <span>Signal Monitor</span>
+      </a>
+
+      <a href="{{ url_for('osint.index') }}"
+         class="nav-link {% if request.blueprint == 'osint' %}active{% endif %}">
+        <i class="fa fa-user-secret"></i>
+        <span>Username OSINT</span>
+      </a>
+    </div>
+
+    <div class="sidebar-footer">
+      <a href="{{ url_for('monitor.vault_page') }}"
+         class="nav-link {% if request.endpoint == 'monitor.vault_page' %}active{% endif %}">
+        <i class="fa fa-key"></i>
+        <span>Vault</span>
+      </a>
+      <a href="{{ url_for('auth.logout') }}" class="nav-link" style="color: var(--text-faint);">
+        <i class="fa fa-right-from-bracket"></i>
+        <span>Logout</span>
+      </a>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<!-- vis-network -->
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<!-- markdown-it -->
+<script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+
+{% block scripts %}{% endblock %}
+
+<!-- Toast container -->
+<div id="toastContainer"></div>
+
+<!-- Confirm modal (injected by confirmModal()) -->
+<div id="confirmOverlay" style="display:none;"></div>
+
+<script>
+// ── Toast ─────────────────────────────────────────────────────────────────
+window.showToast = function(msg, type = 'info', duration = 3000) {
+  const icons = { success: 'fa-check-circle', danger: 'fa-triangle-exclamation', info: 'fa-circle-info', warning: 'fa-triangle-exclamation' };
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.innerHTML = `<span><i class="fa ${icons[type] || icons.info} me-2"></i>${msg}</span><button onclick="this.parentElement.remove()">✕</button>`;
+  document.getElementById('toastContainer').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, duration);
+};
+
+// ── Confirm Modal ─────────────────────────────────────────────────────────
+window.confirmModal = function(msg, dangerLabel = 'Delete', cancelLabel = 'Cancel') {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('confirmOverlay');
+    overlay.innerHTML = `
+      <div id="confirmBox">
+        <div class="confirm-icon"><i class="fa fa-triangle-exclamation"></i></div>
+        <div class="confirm-msg">${msg}</div>
+        <div class="confirm-btns">
+          <button class="btn btn-ghost btn-sm" id="confirmCancel">${cancelLabel}</button>
+          <button class="btn btn-danger btn-sm" id="confirmOk">${dangerLabel}</button>
+        </div>
+      </div>`;
+    overlay.style.display = 'flex';
+
+    document.getElementById('confirmOk').onclick = () => { overlay.style.display = 'none'; resolve(true); };
+    document.getElementById('confirmCancel').onclick = () => { overlay.style.display = 'none'; resolve(false); };
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.style.display = 'none'; resolve(false); } };
+  });
+};
+
+// ── Copy to clipboard ─────────────────────────────────────────────────────
+window.copyToClipboard = function(text, btnEl) {
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('Copied to clipboard', 'success', 1800);
+    if (btnEl) {
+      btnEl.classList.add('copied');
+      const orig = btnEl.innerHTML;
+      btnEl.innerHTML = '<i class="fa fa-check"></i>';
+      setTimeout(() => { btnEl.innerHTML = orig; btnEl.classList.remove('copied'); }, 1500);
+    }
+  }).catch(() => showToast('Copy failed', 'danger'));
+};
+
+// ── Ctrl+S global save ────────────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    if (typeof window.saveGraph === 'function') window.saveGraph();
+  }
+});
+</script>
+</body>
+</html>

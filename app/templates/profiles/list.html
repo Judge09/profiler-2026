@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Profiles — PROFILER{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+  <div>
+    <div class="page-title">Profile <span>Dossiers</span></div>
+    <div class="page-subtitle">{{ profiles|length }} subject(s) in database</div>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{{ url_for('profiles.new_profile') }}" class="btn btn-primary">
+      <i class="fa fa-plus"></i> New Profile
+    </a>
+    <button class="btn btn-ghost" data-bs-toggle="modal" data-bs-target="#tagModal">
+      <i class="fa fa-tags"></i> Tags
+    </button>
+  </div>
+</div>
+
+<div class="page-body">
+  <!-- Search, sort & filter bar -->
+  <div class="d-flex gap-3 mb-4 align-items-center flex-wrap">
+    <form method="GET" class="search-bar" id="searchForm">
+      <i class="fa fa-search search-icon"></i>
+      <input type="text" name="q" value="{{ q }}" class="form-control"
+             placeholder="Search codename, name…" style="width:240px;">
+      <input type="hidden" name="tag" value="{{ tag_filter }}">
+      <input type="hidden" name="sort" value="{{ sort }}" id="sortHidden">
+    </form>
+
+    <!-- Sort -->
+    <select class="sort-select" onchange="applySort(this.value)">
+      <option value="date"   {% if sort == 'date'   %}selected{% endif %}>Sort: Latest</option>
+      <option value="name"   {% if sort == 'name'   %}selected{% endif %}>Sort: A–Z</option>
+      <option value="threat" {% if sort == 'threat' %}selected{% endif %}>Sort: Threat ↓</option>
+    </select>
+
+    <!-- Tag pills -->
+    <div class="d-flex gap-2 flex-wrap">
+      <a href="{{ url_for('profiles.list_profiles', q=q, sort=sort) }}"
+         class="dork-pill {% if not tag_filter %}active{% endif %}">All</a>
+      {% for tag in tags %}
+      <a href="{{ url_for('profiles.list_profiles', q=q, sort=sort, tag=tag.name) }}"
+         class="dork-pill {% if tag_filter == tag.name %}active{% endif %}"
+         style="{% if tag_filter == tag.name %}border-color:{{ tag.color }};color:{{ tag.color }};{% endif %}">
+        {{ tag.name }}
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if profiles %}
+  <div class="profile-grid">
+    {% for p in profiles %}
+    <a href="{{ url_for('profiles.detail', profile_id=p.id) }}" class="profile-card">
+      {% if p.photo_path %}
+      <img src="{{ url_for('static', filename=p.photo_path) }}" class="profile-card-photo" alt="">
+      {% else %}
+      <div class="profile-card-photo-placeholder"><i class="fa fa-user"></i></div>
+      {% endif %}
+
+      <div class="profile-card-info">
+        <div class="profile-card-codename">{{ p.codename }}</div>
+        {% if p.real_name %}
+        <div class="profile-card-realname">{{ p.real_name }}</div>
+        {% endif %}
+
+        {% if p.radar_config %}
+        <div class="d-flex align-items-center gap-2 mt-2">
+          <span style="font-size:10px; color:var(--text-faint);">{{ p.radar_config.axis5_label|upper }}</span>
+          <span style="font-size:13px; font-weight:700; color:var(--red); font-family:var(--font-mono);">
+            {{ p.radar_config.axis5_score | int }}/10
+          </span>
+        </div>
+        {% endif %}
+
+        <!-- Stat counts -->
+        <div class="profile-card-stats">
+          {% if p.social_links %}
+          <span class="profile-card-stat">
+            <i class="fa fa-share-nodes"></i> {{ p.social_links|length }}
+          </span>
+          {% endif %}
+          {% if p.intel_notes %}
+          <span class="profile-card-stat">
+            <i class="fa fa-terminal"></i> {{ p.intel_notes|length }}
+          </span>
+          {% endif %}
+          <span class="profile-card-stat">
+            <i class="fa fa-clock"></i> {{ p.created_at.strftime('%b %d') }}
+          </span>
+        </div>
+
+        <div class="profile-card-tags mt-1">
+          {% for tag in p.tags[:4] %}
+          <span class="badge-tag" style="background:{{ tag.color }}22; color:{{ tag.color }}; border:1px solid {{ tag.color }}44;">
+            {{ tag.name }}
+          </span>
+          {% endfor %}
+        </div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+
+  {% else %}
+  <div class="empty-state">
+    <div><i class="fa fa-id-card"></i></div>
+    <h3>No profiles found</h3>
+    <p>{% if q %}No results for "{{ q }}".{% else %}Create your first profile to get started.{% endif %}</p>
+    {% if not q %}
+    <a href="{{ url_for('profiles.new_profile') }}" class="btn btn-outline mt-3">
+      <i class="fa fa-plus"></i> Create Profile
+    </a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- Tag Management Modal -->
+<div class="modal fade" id="tagModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content" style="background:var(--bg-card); border:1px solid var(--border);">
+      <div class="modal-header" style="border-bottom:1px solid var(--border);">
+        <h5 class="modal-title" style="font-size:13px; font-weight:700; letter-spacing:1px; text-transform:uppercase;">
+          <i class="fa fa-tags me-2 text-accent"></i>Manage Tags
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="tagList" class="mb-3">
+          {% for tag in tags %}
+          <div class="d-flex align-items-center gap-2 mb-2" id="tag-row-{{ tag.id }}">
+            <span class="badge-tag" style="background:{{ tag.color }}22; color:{{ tag.color }}; border:1px solid {{ tag.color }}44; min-width:80px; text-align:center;">
+              {{ tag.name }}
+            </span>
+            <span style="font-size:11px; color:var(--text-faint);">{{ tag.profiles|length }} profiles</span>
+            <button class="btn btn-xs btn-danger ms-auto" onclick="deleteTag({{ tag.id }})">
+              <i class="fa fa-trash"></i>
+            </button>
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="d-flex gap-2 mt-3">
+          <input type="text" id="newTagName" class="form-control form-control-sm" placeholder="Tag name">
+          <input type="color" id="newTagColor" value="#00ff99"
+                 style="width:40px; height:32px; padding:1px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; cursor:pointer;">
+          <button class="btn btn-sm btn-primary" onclick="createTag()">
+            <i class="fa fa-plus"></i>
+          </button>
+        </div>
+        <div id="tagError" class="text-red mt-2" style="font-size:11px; display:none;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function applySort(val) {
+  document.getElementById('sortHidden').value = val;
+  document.getElementById('searchForm').submit();
+}
+
+async function createTag() {
+  const name = document.getElementById('newTagName').value.trim();
+  const color = document.getElementById('newTagColor').value;
+  if (!name) return;
+
+  const res = await fetch('/profiles/tags', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, color})
+  });
+  const data = await res.json();
+
+  if (!res.ok) {
+    const err = document.getElementById('tagError');
+    err.textContent = data.error;
+    err.style.display = 'block';
+    return;
+  }
+
+  const list = document.getElementById('tagList');
+  const row = document.createElement('div');
+  row.className = 'd-flex align-items-center gap-2 mb-2';
+  row.id = `tag-row-${data.id}`;
+  row.innerHTML = `
+    <span class="badge-tag" style="background:${data.color}22; color:${data.color}; border:1px solid ${data.color}44; min-width:80px; text-align:center;">${data.name}</span>
+    <span style="font-size:11px; color:var(--text-faint);">0 profiles</span>
+    <button class="btn btn-xs btn-danger ms-auto" onclick="deleteTag(${data.id})"><i class="fa fa-trash"></i></button>
+  `;
+  list.appendChild(row);
+  document.getElementById('newTagName').value = '';
+  document.getElementById('tagError').style.display = 'none';
+  showToast(`Tag "${data.name}" created`, 'success');
+}
+
+async function deleteTag(id) {
+  if (!await confirmModal('Delete this tag? It will be removed from all profiles.')) return;
+  const res = await fetch(`/profiles/tags/${id}`, {method: 'DELETE'});
+  if (res.ok) {
+    document.getElementById(`tag-row-${id}`)?.remove();
+    showToast('Tag deleted', 'info');
+  }
+}
+</script>
+{% endblock %}
