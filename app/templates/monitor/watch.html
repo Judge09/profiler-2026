@@ -14,8 +14,10 @@
   </div>
   <div class="d-flex gap-2 flex-wrap">
     <button class="btn btn-outline btn-sm" id="btnSandbox"><i class="fa fa-flask me-1"></i> Test scoring</button>
-    <button class="btn btn-outline btn-sm" id="btnCsv"><i class="fa fa-file-csv me-1"></i> CSV</button>
-    <button class="btn btn-outline btn-sm" id="btnJson"><i class="fa fa-file-code me-1"></i> JSON</button>
+    <button class="btn btn-outline btn-sm" id="btnCsv"
+            title="Export the current filtered view as CSV (hold Shift for every post)"><i class="fa fa-file-csv me-1"></i> CSV</button>
+    <button class="btn btn-outline btn-sm" id="btnJson"
+            title="Export the current filtered view as JSON (hold Shift for every post)"><i class="fa fa-file-code me-1"></i> JSON</button>
     <button class="btn btn-danger btn-sm" id="btnDeleteWatch"><i class="fa fa-trash"></i></button>
   </div>
 </div>
@@ -356,10 +358,24 @@
         <option value="50">50</option>
         <option value="100">100</option>
       </select>
+      <label class="mon-check" title="Show only pinned posts">
+        <input type="checkbox" id="pinnedOnly"> <i class="fa fa-thumbtack"></i>
+      </label>
       <button class="btn btn-ghost btn-sm" id="btnResetFilters" title="Clear all filters">
         <i class="fa fa-filter-circle-xmark"></i></button>
       <button class="btn btn-outline btn-sm" id="btnLinkmap">
         <i class="fa fa-diagram-project me-1"></i> Link map</button>
+    </div>
+
+    <!-- Saved filters. Filters are retained across reloads and shareable via
+         the URL; a preset names a set worth coming back to. -->
+    <div class="mon-presets mb-2">
+      <span class="lbl"><i class="fa fa-bookmark me-1"></i>Saved views</span>
+      <div id="presetList" class="mon-preset-list"></div>
+      <span id="filterCount" class="mon-filter-count" style="display:none"></span>
+      <button class="btn btn-ghost btn-xs" id="btnSavePreset"
+              title="Save the current filters as a named view">
+        <i class="fa fa-plus me-1"></i>Save view</button>
     </div>
 
     <div id="bulkBar" class="mon-triage mb-3" style="display:none">

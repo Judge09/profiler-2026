@@ -152,6 +152,16 @@
       });
     },
 
+    // Every post matching a query, unpaged -- what an export of "the current
+    // view" needs. Paging is a reading convenience; it should not silently
+    // decide what lands in the file.
+    async allMatching(watch, query) {
+      await Data.ensureFresh(watch);
+      const q = Object.assign({}, query, { page: 1, per_page: 1000000 });
+      const page = await Store.queryPosts(watch.id, q);
+      return page.posts;
+    },
+
     async addPosts(watch, raw, opts) {
       // Strict by default, matching collection: a post that fails the watch's
       // own relevance rules does not belong in it, however it arrived.

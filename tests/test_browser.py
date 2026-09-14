@@ -142,6 +142,68 @@ with sync_playwright() as pw:
     check("sort oldest (ascending)", r["oldestOrdered"])
     check("pinned overrides date sort", r["pinnedTop"])
 
+    print("\n=== Date window and pinned filters ===")
+    # The toolbar sends `days`; it used to be ignored entirely, so a date
+    # filter looked applied while changing nothing.
+    r = page.evaluate("""async () => {
+        const mk = (id, daysAgo, pinned) => ({
+            watch_id: 9, author:'d'+id, handle:'', text:'dated post '+id,
+            platform:'X', verdict:'ok', score:10, types:[], status:'new',
+            posted_ts: new Date(Date.now()-daysAgo*86400000).toISOString(),
+            dedupe_key:'d'+id, pinned: !!pinned,
+        });
+        await Store.putMany('posts', [mk(1,0,true), mk(2,3,false),
+                                      mk(3,10,false), mk(4,45,false)]);
+        const all   = await Store.queryPosts(9, {per_page:100});
+        const d1    = await Store.queryPosts(9, {days:'1',  per_page:100});
+        const d7    = await Store.queryPosts(9, {days:'7',  per_page:100});
+        const d30   = await Store.queryPosts(9, {days:'30', per_page:100});
+        const junk  = await Store.queryPosts(9, {days:'',   per_page:100});
+        const pin   = await Store.queryPosts(9, {pinned:true, per_page:100});
+        const since = await Store.queryPosts(9, {
+            since: new Date(Date.now()-7*86400000).toISOString(), per_page:100});
+        return {all: all.matching, d1: d1.matching, d7: d7.matching,
+                d30: d30.matching, junk: junk.matching, pin: pin.matching,
+                since: since.matching,
+                pinOnly: pin.posts.every(p => p.pinned === true)};
+    }""")
+    check("date window: 24 h", r["d1"] == 1, "n=%d" % r["d1"])
+    check("date window: 7 days", r["d7"] == 2, "n=%d" % r["d7"])
+    check("date window: 30 days", r["d30"] == 3, "n=%d" % r["d30"])
+    check("empty days means no date filter", r["junk"] == r["all"] == 4, r)
+    check("explicit since still works", r["since"] == 2, "n=%d" % r["since"])
+    check("pinned-only filter", r["pin"] == 1 and r["pinOnly"], "n=%d" % r["pin"])
+
+    print("\n=== Saved filters ===")
+    r = page.evaluate("""async () => {
+        const id = await Store.put('saved_filters', {
+            watch_id: 9, name: 'High risk, last week',
+            filters: {verdict:'bad', days:'7'},
+            updated_at: new Date().toISOString(),
+        });
+        await Store.put('saved_filters', {
+            watch_id: 0, name: 'Everywhere', filters: {status:'escalated'},
+            updated_at: new Date().toISOString(),
+        });
+        const rows = await Store.all('saved_filters');
+        const one = await Store.get('saved_filters', id);
+        // A preset is applied by feeding its filters straight back to the
+        // query, so what was saved is exactly what is re-run.
+        const applied = await Store.queryPosts(9,
+            Object.assign({per_page:100}, one.filters));
+        await Store.remove('saved_filters', id);
+        const after = await Store.all('saved_filters');
+        return {n: rows.length, name: one.name, verdict: one.filters.verdict,
+                scoped: rows.filter(f=>f.watch_id===0).length,
+                applied: applied.matching, afterDelete: after.length};
+    }""")
+    check("saved filter persists", r["name"] == "High risk, last week" and
+          r["verdict"] == "bad", r)
+    check("cross-watch preset stored", r["scoped"] == 1, "n=%d" % r["scoped"])
+    check("preset filters re-run", r["applied"] == 0, "n=%d" % r["applied"])
+    check("saved filter deletable", r["afterDelete"] == 1,
+          "n=%d" % r["afterDelete"])
+
     print("\n=== Manual override wins ===")
     r = page.evaluate("""async () => {
         const q = await Store.queryPosts(1, {verdict:'ok', per_page:1});

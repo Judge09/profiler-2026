@@ -31,21 +31,111 @@
     ok: { label: 'Likely authentic', color: 'var(--green)' },
   };
 
+  /* ── Filter model ──────────────────────────────────────────────────────
+     One place defines what a filter *is*, so retention, the URL, presets and
+     export all agree on the same vocabulary. Anything not in DEFAULTS is not
+     a filter and is never persisted. */
+
+  const SORTS = ['risk', 'recent', 'oldest', 'relevance', 'platform', 'status'];
+  const DEFAULT_PER_PAGE = window.MONITOR.pageSize || 25;
+  // The configured PAGE_SIZE is accepted even when it is not one of the menu
+  // choices, so a deployment that sets its own default is not normalised away.
+  const PER_PAGE_CHOICES = [10, 25, 50, 100].concat(
+    [10, 25, 50, 100].includes(DEFAULT_PER_PAGE) ? [] : [DEFAULT_PER_PAGE]);
+  const FILTER_DEFAULTS = {
+    verdict: 'all',
+    status: '',
+    platform: '',
+    days: '',
+    q: '',
+    types: '',
+    pinned: false,
+    sort: 'risk',
+    per_page: DEFAULT_PER_PAGE,
+  };
+  // Page is positional, not a filter: it is retained in the URL so a reload
+  // lands where you were, but it is never part of a saved preset.
+  const FILTER_KEYS = Object.keys(FILTER_DEFAULTS);
+  const LAST_FILTER_KEY = 'monitor:filters:' + WATCH;
+
+  function defaultQuery() {
+    return Object.assign({ page: 1 }, FILTER_DEFAULTS);
+  }
+
+  // Coerce anything (URL string, stored JSON, preset) into a valid query.
+  // Unknown keys and out-of-range values are dropped rather than trusted.
+  function normalizeQuery(raw) {
+    const o = raw || {};
+    const out = defaultQuery();
+    if (['all', 'bad', 'warn', 'ok'].includes(o.verdict)) out.verdict = o.verdict;
+    if (STATUSES.includes(o.status)) out.status = o.status;
+    if (o.platform) out.platform = String(o.platform);
+    if (['1', '7', '30', '90'].includes(String(o.days))) out.days = String(o.days);
+    if (o.q) out.q = String(o.q).slice(0, 200);
+    if (o.types) out.types = String(o.types).slice(0, 80);
+    out.pinned = o.pinned === true || o.pinned === 'true' || o.pinned === '1';
+    if (SORTS.includes(o.sort)) out.sort = o.sort;
+    const pp = parseInt(o.per_page, 10);
+    if (PER_PAGE_CHOICES.includes(pp)) out.per_page = pp;
+    const pg = parseInt(o.page, 10);
+    out.page = pg > 0 ? pg : 1;
+    return out;
+  }
+
+  // Only non-default values travel, so a shared link stays readable and a
+  // preset does not silently pin defaults that later change.
+  function activeFilters(q) {
+    const out = {};
+    FILTER_KEYS.forEach((k) => {
+      if (q[k] !== FILTER_DEFAULTS[k] && q[k] !== '' && q[k] !== false) out[k] = q[k];
+    });
+    return out;
+  }
+
+  function filterCount(q) {
+    // Sort and page size are view preferences, not narrowing filters, so they
+    // are not counted as "active" -- otherwise the badge never reads zero.
+    return Object.keys(activeFilters(q)).filter(
+      (k) => k !== 'sort' && k !== 'per_page').length;
+  }
+
+  function queryFromUrl() {
+    const p = new URLSearchParams(window.location.search);
+    if (![...p.keys()].some((k) => FILTER_KEYS.includes(k) || k === 'page')) return null;
+    const raw = {};
+    FILTER_KEYS.concat(['page']).forEach((k) => {
+      if (p.has(k)) raw[k] = p.get(k);
+    });
+    return normalizeQuery(raw);
+  }
+
+  // The URL is the source of truth a reload or a shared link reads back, so it
+  // is rewritten (without a history entry) on every filter change. The watch
+  // id travels in the same query string and must survive the rewrite -- drop
+  // it and the page has no watch to show.
+  function syncUrl() {
+    const p = new URLSearchParams();
+    const id = new URLSearchParams(window.location.search).get('id');
+    if (id) p.set('id', id);
+    Object.entries(activeFilters(state.query)).forEach(([k, v]) => p.set(k, v));
+    if (state.query.page > 1) p.set('page', state.query.page);
+    const qs = p.toString();
+    const url = window.location.pathname + (qs ? '?' + qs : '');
+    window.history.replaceState({ q: state.query }, '', url);
+  }
+
+  function persistFilters() {
+    // Best-effort: a failed write must never block rendering.
+    Store.saveSetting(LAST_FILTER_KEY, state.query).catch(() => {});
+  }
+
   // `query` is exactly what goes to the server; everything else is local UI.
   const state = {
     posts: [],
     counts: window.MONITOR.counts || { bad: 0, warn: 0, ok: 0 },
-    query: {
-      page: 1,
-      per_page: window.MONITOR.pageSize || 25,
-      verdict: 'all',
-      status: '',
-      platform: '',
-      days: '',
-      q: '',
-      sort: 'risk',
-      types: '',
-    },
+    // Replaced in boot() by the URL or the retained filters; defaults here so
+    // an event arriving before boot finishes still has a valid query to read.
+    query: defaultQuery(),
     meta: { pages: 1, matching: 0, total: 0, platforms: [] },
     open: new Set(),
     selected: new Set(),
@@ -288,11 +378,30 @@
   }
 
   // Jump to page 1 whenever a filter changes, since the current page number
-  // is meaningless against a different result set.
+  // is meaningless against a different result set. Every change is mirrored to
+  // the URL and to storage, so the view survives a reload or a trip to the
+  // link map and back.
   function setFilter(patch) {
     Object.assign(state.query, patch, { page: 1 });
     state.selected.clear();
+    syncUrl();
+    persistFilters();
     refresh();
+  }
+
+  // Push the query back onto the controls. Used on boot and after applying a
+  // preset, so the toolbar never disagrees with the results below it.
+  function syncControls() {
+    const q = state.query;
+    const set = (id, v) => { const el = $('#' + id); if (el) el.value = v; };
+    set('q', q.q);
+    set('statusSel', q.status);
+    set('platformSel', q.platform);
+    set('daysSel', q.days);
+    set('sortSel', q.sort);
+    set('perPageSel', String(q.per_page));
+    const pin = $('#pinnedOnly');
+    if (pin) pin.checked = q.pinned;
   }
 
   /* ── Rendering ────────────────────────────────────────────────────────── */
@@ -516,31 +625,86 @@
           ' (' + p.count + ')</option>').join('');
     }
 
+    // An empty list has three quite different causes; say which one it is,
+    // and offer the way out of the one that is recoverable.
+    let empty;
+    if (!total) {
+      empty = 'No posts yet. Collect some above.';
+    } else if (filterCount(state.query)) {
+      empty = 'None of the <b>' + total + '</b> posts in this watch match ' +
+        describeFilters(activeFilters(state.query)) + '. ' +
+        '<button class="btn btn-ghost btn-xs" id="btnClearInline">Clear filters</button>';
+    } else {
+      empty = 'No posts on this page. ' +
+        '<button class="btn btn-ghost btn-xs" id="btnClearInline">Back to the start</button>';
+    }
     $('#list').innerHTML = state.posts.length
       ? state.posts.map(card).join('')
-      : '<div class="mon-empty">' + (total
-          ? 'No posts match this view. <button class="btn btn-ghost btn-xs" id="btnClearInline">Clear filters</button>'
-          : 'No posts yet. Collect some above.') + '</div>';
+      : '<div class="mon-empty">' + empty + '</div>';
 
     renderMeta();
     renderPager();
+    renderPresets();
 
     $('#selCount').textContent = state.selected.size;
     $('#bulkBar').style.display = state.selected.size ? '' : 'none';
+  }
+
+  // Labels for the removable chips below the toolbar. Every narrowing filter
+  // appears here -- including `types`, which has no control of its own and
+  // would otherwise stay applied invisibly after a reload.
+  const CHIP_LABELS = {
+    verdict: (v) => VERD[v].label,
+    status: (v) => 'Status: ' + v,
+    platform: (v) => v,
+    days: (v) => (v === '1' ? 'Last 24 h' : 'Last ' + v + ' days'),
+    types: (v) => 'Type: ' + v,
+    pinned: () => 'Pinned only',
+    q: (v) => '“' + v + '”',
+  };
+
+  function renderChipsForFilters() {
+    const f = activeFilters(state.query);
+    return Object.keys(CHIP_LABELS)
+      .filter((k) => k in f)
+      .map((k) => '<button class="mon-fchip" data-drop-filter="' + k + '" ' +
+        'title="Remove this filter">' + esc(CHIP_LABELS[k](f[k])) +
+        ' <i class="fa fa-xmark"></i></button>').join('');
   }
 
   function renderMeta() {
     const m = state.meta;
     const el = $('#resultMeta');
     if (!el) return;
-    if (!m.matching) { el.textContent = ''; return; }
+    const chips = renderChipsForFilters();
+    const chipRow = chips
+      ? '<div class="mon-fchips">' + chips +
+        '<button class="mon-fchip clear" data-drop-filter="*">Clear all</button></div>'
+      : '';
+    if (!m.matching) {
+      // Say why the list is empty: an empty watch and an over-narrow filter
+      // look identical otherwise.
+      el.innerHTML = chipRow;
+      return;
+    }
     const from = (m.page - 1) * m.per_page + 1;
     const to = Math.min(m.page * m.per_page, m.matching);
     const filtered = m.matching !== m.total;
-    el.innerHTML = 'Showing <b>' + from + '–' + to + '</b> of <b>' + m.matching + '</b>' +
+    el.innerHTML = chipRow +
+      '<div>Showing <b>' + from + '–' + to + '</b> of <b>' + m.matching + '</b>' +
       (filtered ? ' matching (of ' + m.total + ' total)' : ' posts') +
-      ' · page ' + m.page + ' of ' + m.pages;
+      ' · page ' + m.page + ' of ' + m.pages + '</div>';
   }
+
+  // Removing one chip re-runs the query with just that filter dropped.
+  document.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-drop-filter]');
+    if (!chip) return;
+    const k = chip.dataset.dropFilter;
+    if (k === '*') { resetFilters(); return; }
+    setFilter({ [k]: FILTER_DEFAULTS[k] });
+    syncControls();
+  });
 
   // A windowed pager: first, last, and a few either side of the current page.
   function renderPager() {
@@ -570,6 +734,8 @@
     const p = Math.max(1, Math.min(state.meta.pages || 1, n));
     if (p === state.query.page) return;
     state.query.page = p;
+    syncUrl();
+    persistFilters();
     refresh().then(() => {
       const top = document.getElementById('list');
       if (top) top.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -595,15 +761,15 @@
     if (e.key === 'ArrowLeft' && state.meta.has_prev) goToPage(state.query.page - 1);
   });
 
+  // Clears narrowing filters but keeps sort and page size, which are how the
+  // analyst likes to read results rather than part of the question being asked.
   function resetFilters() {
-    Object.assign(state.query, {
-      page: 1, verdict: 'all', status: '', platform: '', days: '', q: '', types: '',
-    });
-    const q = $('#q'); if (q) q.value = '';
-    ['statusSel', 'platformSel', 'daysSel'].forEach((id) => {
-      const el = $('#' + id); if (el) el.value = '';
-    });
+    const keep = { sort: state.query.sort, per_page: state.query.per_page };
+    state.query = Object.assign(defaultQuery(), keep);
+    syncControls();
     state.selected.clear();
+    syncUrl();
+    persistFilters();
     refresh();
   }
 
@@ -738,10 +904,9 @@
     const tf = e.target.closest('[data-type-filter]');
     if (tf) {
       e.preventDefault();
-      state.q = tf.dataset.typeFilter;
-      $('#q').value = state.q;
-      state.filter = 'all';
-      render();
+      // Filter by threat type properly, rather than by dropping the label into
+      // the search box: `types` matches the classification, not the post text.
+      setFilter({ types: tf.dataset.typeFilter, verdict: 'all' });
       $('#list').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   });
@@ -844,6 +1009,7 @@
         // Deleting the last row of a page would otherwise leave it empty.
         if (state.posts.length === data.affected && state.query.page > 1) {
           state.query.page -= 1;
+          syncUrl();
         }
       }
       await refresh();
@@ -880,6 +1046,164 @@
   $('#perPageSel').addEventListener('change', (e) =>
     setFilter({ per_page: parseInt(e.target.value, 10) || 25 }));
   $('#btnResetFilters').addEventListener('click', resetFilters);
+  const pinnedOnly = $('#pinnedOnly');
+  if (pinnedOnly) {
+    pinnedOnly.addEventListener('change', (e) => setFilter({ pinned: e.target.checked }));
+  }
+
+  /* ── Saved filters ─────────────────────────────────────────────────────
+     A preset is a named set of non-default filters. Presets are stored per
+     watch, except those that name nothing watch-specific (no platform), which
+     are saved against watch 0 and offered everywhere. */
+
+  let FILTER_PRESETS = [];
+
+  function presetIsPortable(f) {
+    // A platform only exists within the watch that collected it; everything
+    // else (verdict, status, date window, text) means the same anywhere.
+    return !f.platform;
+  }
+
+  // A human-readable account of what a preset actually does, so the list is
+  // readable without having to apply each one to find out.
+  function describeFilters(f) {
+    const bits = [];
+    if (f.verdict && f.verdict !== 'all') bits.push(VERD[f.verdict].label);
+    if (f.status) bits.push('status: ' + f.status);
+    if (f.platform) bits.push(f.platform);
+    if (f.days) bits.push(f.days === '1' ? 'last 24 h' : 'last ' + f.days + ' days');
+    if (f.types) bits.push('type: ' + f.types);
+    if (f.pinned) bits.push('pinned only');
+    if (f.q) bits.push('“' + f.q + '”');
+    if (f.sort && f.sort !== FILTER_DEFAULTS.sort) {
+      const opt = $('#sortSel') && $('#sortSel').querySelector('option[value="' + f.sort + '"]');
+      bits.push('sorted by ' + (opt ? opt.textContent.toLowerCase() : f.sort));
+    }
+    return bits.length ? bits.join(' · ') : 'No filters (everything)';
+  }
+
+  async function loadPresets() {
+    try {
+      const rows = await Store.all('saved_filters');
+      FILTER_PRESETS = rows.filter((r) => r.watch_id === WATCH || r.watch_id === 0)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    } catch (e) {
+      FILTER_PRESETS = [];
+    }
+    renderPresets();
+  }
+
+  // Two presets match when they narrow by the same things, so the active one
+  // can be highlighted after a reload without storing which was last clicked.
+  function sameFilters(a, b) {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    return ka.length === kb.length && ka.every((k) => String(a[k]) === String(b[k]));
+  }
+
+  function renderPresets() {
+    const el = $('#presetList');
+    if (!el) return;
+    const cur = activeFilters(state.query);
+    if (!FILTER_PRESETS.length) {
+      el.innerHTML = '<span class="mon-note mb-0">No saved filters yet. ' +
+        'Set up a view, then save it.</span>';
+    } else {
+      el.innerHTML = FILTER_PRESETS.map((f) => {
+        const on = sameFilters(cur, f.filters || {});
+        return '<span class="mon-preset' + (on ? ' on' : '') + '">' +
+          '<button type="button" data-preset="' + f.id + '" title="' +
+            esc(describeFilters(f.filters || {})) + '">' +
+            esc(f.name) + (f.watch_id === 0 ? ' <i class="fa fa-globe" title="Available in every watch"></i>' : '') +
+          '</button>' +
+          '<button type="button" class="x" data-preset-del="' + f.id +
+            '" title="Delete this saved filter" aria-label="Delete ' + esc(f.name) + '">&times;</button>' +
+          '</span>';
+      }).join('');
+    }
+    const badge = $('#filterCount');
+    if (badge) {
+      const n = filterCount(state.query);
+      badge.textContent = n ? n + ' active' : '';
+      badge.style.display = n ? '' : 'none';
+    }
+  }
+
+  async function savePreset() {
+    const filters = activeFilters(state.query);
+    if (!Object.keys(filters).length) {
+      showToast('Set at least one filter before saving a view', 'info');
+      return;
+    }
+    const name = (window.prompt('Name this filter', suggestPresetName(filters)) || '').trim();
+    if (!name) return;
+
+    const scope = presetIsPortable(filters) ? 0 : WATCH;
+    // Saving over an existing name updates it, rather than quietly growing a
+    // list of near-duplicates.
+    const existing = FILTER_PRESETS.find(
+      (f) => f.name.toLowerCase() === name.toLowerCase() && f.watch_id === scope);
+    try {
+      await Store.put('saved_filters', Object.assign({}, existing, {
+        watch_id: scope, name, filters, updated_at: new Date().toISOString(),
+      }));
+      await loadPresets();
+      showToast(existing ? 'Updated “' + name + '”' : 'Saved “' + name + '”', 'success');
+    } catch (e) {
+      showToast(e.message, 'danger');
+    }
+  }
+
+  function suggestPresetName(f) {
+    return describeFilters(f).replace(/ · /g, ', ').slice(0, 40);
+  }
+
+  async function applyPreset(id) {
+    const f = FILTER_PRESETS.find((x) => String(x.id) === String(id));
+    if (!f) return;
+    // Keep the reading preferences unless the preset names its own.
+    const base = { sort: state.query.sort, per_page: state.query.per_page };
+    state.query = normalizeQuery(Object.assign(base, f.filters || {}));
+    syncControls();
+    state.selected.clear();
+    syncUrl();
+    persistFilters();
+    await refresh();
+  }
+
+  async function deletePreset(id) {
+    const f = FILTER_PRESETS.find((x) => String(x.id) === String(id));
+    if (!f || !window.confirm('Delete the saved filter “' + f.name + '”?')) return;
+    try {
+      await Store.remove('saved_filters', f.id);
+      await loadPresets();
+      showToast('Deleted “' + f.name + '”', 'info');
+    } catch (e) {
+      showToast(e.message, 'danger');
+    }
+  }
+
+  const btnSavePreset = $('#btnSavePreset');
+  if (btnSavePreset) btnSavePreset.addEventListener('click', savePreset);
+
+  const presetList = $('#presetList');
+  if (presetList) {
+    presetList.addEventListener('click', (e) => {
+      const del = e.target.closest('[data-preset-del]');
+      if (del) { deletePreset(del.dataset.presetDel); return; }
+      const use = e.target.closest('[data-preset]');
+      if (use) applyPreset(use.dataset.preset);
+    });
+  }
+
+  // The back/forward buttons should move between filter views, not leave the
+  // page, since the URL is what encodes the view.
+  window.addEventListener('popstate', (e) => {
+    const q = (e.state && e.state.q) || queryFromUrl() || defaultQuery();
+    state.query = normalizeQuery(q);
+    syncControls();
+    state.selected.clear();
+    refresh();
+  });
 
   /* ── Mode toggles and settings ────────────────────────────────────────── */
 
@@ -1085,6 +1409,7 @@
         '<div style="border:0;opacity:.7"><span></span><span style="flex:1">Query: <code>' +
         esc(data.query) + '</code></span></div>';
       state.query.page = 1;
+      syncUrl();
       await refresh();
       showToast(data.added + ' post(s) collected', data.added ? 'success' : 'info');
     } catch (e) {
@@ -1519,9 +1844,49 @@
     return '"' + str.replace(/"/g, '""') + '"';
   }
 
-  async function exportCsv() {
-    const rows = await Store.byIndex('posts', 'watch_id', IDBKeyRange.only(WATCH));
-    rows.sort((a, b) => Store.effScore(b) - Store.effScore(a));
+  // Exports follow the view: whatever the filters select is what lands in the
+  // file, in the same order as on screen -- a filtered workspace and its export
+  // should never disagree. Shift-click exports the whole watch instead, for a
+  // full backup.
+  async function exportRows(all) {
+    if (all) {
+      const rows = await Store.byIndex('posts', 'watch_id', IDBKeyRange.only(WATCH));
+      rows.sort((a, b) => Store.effScore(b) - Store.effScore(a));
+      return rows;
+    }
+    return Data.allMatching(watch, state.query);
+  }
+
+  // A filename that says which slice this is, so several exports from one watch
+  // do not overwrite each other or get mixed up later.
+  function exportName(ext, all) {
+    const bits = ['signal-monitor', String(WATCH)];
+    if (!all) {
+      const f = activeFilters(state.query);
+      ['verdict', 'status', 'platform'].forEach((k) => {
+        if (f[k]) bits.push(String(f[k]).toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+      });
+      if (f.days) bits.push(f.days + 'd');
+      if (f.pinned) bits.push('pinned');
+      if (f.q || f.types) bits.push('search');
+    }
+    bits.push(new Date().toISOString().slice(0, 10));
+    return bits.join('-') + '.' + ext;
+  }
+
+  function exportNote(rows, all) {
+    if (all) return 'Exported all ' + rows.length + ' post(s) in this watch';
+    return 'Exported ' + rows.length + ' post(s)' +
+      (filterCount(state.query) ? ' matching the current view' : '');
+  }
+
+  async function exportCsv(e) {
+    const all = !!(e && e.shiftKey);
+    const rows = await exportRows(all);
+    if (!rows.length) {
+      showToast('Nothing to export in this view', 'info');
+      return;
+    }
     const head = ['platform', 'author', 'handle', 'verified', 'risk_score',
       'verdict', 'overridden', 'threat_types', 'signals', 'links', 'profile',
       'status', 'analyst_note', 'url', 'posted_at', 'source', 'text'];
@@ -1540,18 +1905,29 @@
         p.posted_at || '', p.source, p.text,
       ].map(csvCell).join(','));
     });
-    download('signal-monitor-' + WATCH + '-' +
-      new Date().toISOString().slice(0, 10) + '.csv',
-      lines.join('\n'), 'text/csv');
-    showToast('Exported ' + rows.length + ' post(s)', 'success');
+    download(exportName('csv', all), lines.join('\n'), 'text/csv');
+    showToast(exportNote(rows, all), 'success');
   }
 
-  async function exportJson() {
-    const rows = await Store.byIndex('posts', 'watch_id', IDBKeyRange.only(WATCH));
-    download('signal-monitor-' + WATCH + '.json', JSON.stringify({
-      watch, exported_at: new Date().toISOString(), posts: rows,
+  async function exportJson(e) {
+    const all = !!(e && e.shiftKey);
+    const rows = await exportRows(all);
+    if (!rows.length) {
+      showToast('Nothing to export in this view', 'info');
+      return;
+    }
+    download(exportName('json', all), JSON.stringify({
+      watch,
+      exported_at: new Date().toISOString(),
+      // Recording the filters makes the file self-describing: a reader can see
+      // that it is a slice, and which one, rather than assuming it is the lot.
+      scope: all ? 'all posts in watch' : 'current filtered view',
+      filters: all ? {} : activeFilters(state.query),
+      filters_described: all ? 'none' : describeFilters(activeFilters(state.query)),
+      count: rows.length,
+      posts: rows,
     }, null, 2), 'application/json');
-    showToast('Exported ' + rows.length + ' post(s)', 'success');
+    showToast(exportNote(rows, all), 'success');
   }
 
   /* ── Boot ─────────────────────────────────────────────────────────────
@@ -1638,11 +2014,28 @@
     }
     PROFILES = await Store.all('profiles');
 
+    // Filter precedence: an explicit URL (a shared or bookmarked link) wins,
+    // then whatever this analyst last had open on this watch, then defaults.
+    let restored = queryFromUrl();
+    let fromUrl = !!restored;
+    if (!restored) {
+      try { restored = await Store.setting(LAST_FILTER_KEY, null); } catch (e) { /* first run */ }
+    }
+    state.query = normalizeQuery(restored || {});
+    syncControls();
+    if (!fromUrl) syncUrl();
+
+    await loadPresets();
+
     fillForm();
     renderChips();
     markChangedWeights();
     previewTopic();
     await refresh();
+
+    if (!fromUrl && filterCount(state.query)) {
+      showToast('Restored your last filters · ' + describeFilters(activeFilters(state.query)), 'info');
+    }
   }
 
   $('#btnCsv').addEventListener('click', exportCsv);

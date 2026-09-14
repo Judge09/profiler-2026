@@ -178,6 +178,42 @@ fingerprint, and exactly the affected posts are rescored — nothing else.
 
 ---
 
+## Reading results: filters, saved views and export
+
+The toolbar above the results narrows what you are looking at: verdict (the
+legend buttons), platform, status, date window, threat type, pinned-only, free
+text, plus sort order and page size. Filtering, sorting and paging all run
+against the store, so a watch holding thousands of posts stays as responsive as
+an empty one.
+
+**Filters are retained.** They are mirrored into the URL and saved per watch, so
+a reload, a trip to the link map and back, or reopening the watch tomorrow all
+land on the view you left. Precedence is: an explicit URL first (which is what
+makes a filtered view shareable and bookmarkable), then your last view on that
+watch, then defaults. Back and forward move between filter views rather than
+leaving the page.
+
+Everything currently narrowing the list appears as a removable chip under the
+toolbar, with a count beside the saved views. Nothing filters invisibly — which
+matters most for threat type, set by clicking a type in the briefing rather than
+from a control of its own.
+
+**Saved views** name a set of filters worth returning to ("High risk, last
+week"). Saving over an existing name updates it. A view that names nothing
+watch-specific is offered in every watch, marked with a globe; one naming a
+platform belongs to the watch that collected it. Applying a view keeps your
+current sort and page size, since those are how you read results rather than
+part of the question being asked. `Clear filters` likewise keeps them.
+
+**Exports follow the view.** CSV and JSON contain exactly what the filters
+select — all of it, not just the page on screen — in the same order. The
+filename records the slice (`signal-monitor-3-bad-x-7d-2026-09-14.csv`) and the
+JSON carries the filters it was exported under, so a file is never mistaken for
+the complete set later. Hold **Shift** while clicking CSV or JSON to export
+every post in the watch instead, for a full backup.
+
+---
+
 ## Link analysis, phishing and geolocation
 
 Links inside posts are extracted, expanded and checked against the open
@@ -321,9 +357,10 @@ python tests/test_routes.py             # auth gate, vault routes, malformed inp
 python tests/test_api.py                # the stateless API (reaches the network)
 python tests/test_browser.py            # Chromium + IndexedDB: monitor core
 python tests/test_browser_profiles.py   # Chromium + IndexedDB: profiles, dorks, OSINT
+python tests/test_browser_filters.py    # Chromium: filter retention, saved views, export
 ```
 
-The two browser suites need Playwright:
+The browser suites need Playwright:
 
 ```bash
 pip install playwright && python -m playwright install chromium

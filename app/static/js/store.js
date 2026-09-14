@@ -25,7 +25,7 @@
   'use strict';
 
   const DB_NAME = 'profiler';
-  const DB_VERSION = 2;
+  const DB_VERSION = 3;
 
   // store -> { keyPath, autoIncrement, indexes: [[name, keyPath, opts]] }
   const SCHEMA = {
@@ -62,6 +62,11 @@
     osint_runs: { keyPath: 'id', autoIncrement: true, indexes: [
       ['run_id', 'run_id', {}], ['username', 'username', {}]] },
     settings: { keyPath: 'key', autoIncrement: false, indexes: [] },
+    // Named filter presets, scoped to a watch. `watch_id` 0 means "any watch",
+    // which is how a preset that only names a verdict or a date window can be
+    // reused across watches.
+    saved_filters: { keyPath: 'id', autoIncrement: true, indexes: [
+      ['watch_id', 'watch_id', {}]] },
   };
 
   let dbPromise = null;
@@ -288,7 +293,13 @@
 
       const term = (o.q || '').toLowerCase();
       const wantTypes = (o.types || '').toLowerCase();
-      const since = o.since ? new Date(o.since).getTime() : null;
+      // The toolbar sends a `days` window; `since` is an explicit cut-off. Both
+      // collapse to one timestamp here -- `days` used to be dropped on the
+      // floor, which made the date filter look applied but do nothing.
+      let since = o.since ? new Date(o.since).getTime() : null;
+      const days = parseInt(o.days, 10);
+      if (!since && days > 0) since = Date.now() - days * 86400000;
+      if (Number.isNaN(since)) since = null;
 
       const match = (p) => {
         if (o.verdict && o.verdict !== 'all' && effVerdict(p) !== o.verdict) return false;
