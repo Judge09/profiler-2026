@@ -118,6 +118,50 @@ class KeywordTests(unittest.TestCase):
         self.assertEqual(keywords.rules_hash(a), keywords.rules_hash(dict(a)))
 
 
+class AliasTests(unittest.TestCase):
+    """Search engines expand acronyms; the filter must not then drop the
+    results the query asked for."""
+
+    def test_phrase_matches_its_acronym(self):
+        s = keywords.spec_for({"kw_required": "Bangsamoro Autonomous Region",
+                               "kw_match_mode": "any", "subject": ""})
+        self.assertTrue(s.evaluate("The BAR met today")["relevant"])
+        self.assertTrue(s.evaluate("Bangsamoro Autonomous Region voted")["relevant"])
+
+    def test_punctuation_variants(self):
+        self.assertIn("US", keywords.expand_aliases("U.S."))
+        self.assertIn("email", keywords.expand_aliases("e-mail"))
+
+    def test_hyphenated_word_is_not_an_acronym(self):
+        """'e-mail' is one word; its initials mean nothing."""
+        self.assertNotIn("EM", keywords.expand_aliases("e-mail"))
+
+    def test_regex_terms_are_left_alone(self):
+        self.assertEqual(keywords.expand_aliases("/barmm\s+poll/"), [])
+
+    def test_acronym_gets_a_hint(self):
+        hints = keywords.alias_hint(["BARMM", "election"])
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0]["term"], "BARMM")
+
+    def test_no_hint_once_a_synonym_is_given(self):
+        """An OR-group already covers the long form, so stop nagging."""
+        self.assertEqual(keywords.alias_hint(["BARMM|Bangsamoro"]), [])
+
+    def test_or_group_keeps_synonym_posts(self):
+        """The reported bug: on-topic posts dropped for using a synonym."""
+        s = keywords.spec_for({"kw_required": "BARMM|Bangsamoro",
+                               "kw_match_mode": "any", "subject": ""})
+        self.assertTrue(s.evaluate("The Bangsamoro parliamentary election")["relevant"])
+        self.assertTrue(s.evaluate("BARMM polls open")["relevant"])
+        self.assertFalse(s.evaluate("Kansas election results")["relevant"])
+
+    def test_hashtags_match_the_bare_term(self):
+        s = keywords.spec_for({"kw_required": "Bangsamoro",
+                               "kw_match_mode": "any", "subject": ""})
+        self.assertTrue(s.evaluate("#Bangsamoro votes today")["relevant"])
+
+
 class SocialCollectorTests(unittest.TestCase):
     """Facebook and X: attribution and origin filtering, no network."""
 

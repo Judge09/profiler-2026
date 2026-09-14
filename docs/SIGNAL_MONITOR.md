@@ -48,7 +48,26 @@ every word is — `parliamentary elections` is generic, `BARMM elections` is not
 | `/barmm\s+parl\w*/` | A regular expression. |
 
 Accents and curly quotes are folded before matching, so `COMELEC’s` still hits
-`comelec`.
+`comelec`. Hashtags match the bare term, so `#Bangsamoro` hits `Bangsamoro`.
+
+### Acronyms — the one thing worth knowing
+
+Search engines expand acronyms; the relevance filter matches text. A watch
+required on `BARMM` **sends a query for BARMM, gets back posts saying
+"Bangsamoro", and then drops them as off-topic** — you pay to fetch results and
+silently discard the on-topic ones.
+
+Multi-word phrases and their initials are linked automatically (`Philippine
+News Agency` also matches `PNA`), but the app cannot know that BARMM means
+Bangsamoro. So when a required term is a bare acronym, the sidebar says so and
+suggests the fix:
+
+```
+BARMM|Bangsamoro
+```
+
+Measured on a real run: 19 posts kept before, 22 after, from the same 24
+fetched.
 
 ### What gets searched
 

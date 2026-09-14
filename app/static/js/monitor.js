@@ -188,6 +188,15 @@
         html += '<div class="mt-1" style="opacity:.75">Search: <code style="font-size:11px">' +
           esc(t.query) + '</code></div>';
       }
+      // A bare acronym silently loses every post that spells it out. The app
+      // cannot know the long form, so it asks for it here rather than dropping
+      // those posts without saying anything.
+      (t.alias_hints || []).forEach((h) => {
+        html += '<div class="mon-alias-hint">' +
+          '<i class="fa fa-lightbulb"></i><span>' + esc(h.why) +
+          ' Try <span class="mon-kbd">' + esc(h.suggest) + '</span>' +
+          '</span></div>';
+      });
       el.innerHTML = html;
     } catch (e) { el.textContent = ''; }
   }, 350);

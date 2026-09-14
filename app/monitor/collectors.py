@@ -306,7 +306,8 @@ def _result(ok=True, posts=None, note="", blocked=False, manual_url="",
 
 # -- RSS / Atom --------------------------------------------------------------
 
-def fetch_feed(url, platform=None, limit=MAX_PER_SOURCE, since=None):
+def fetch_feed(url, platform=None, limit=MAX_PER_SOURCE, since=None,
+               use_cache=True):
     """Parse any RSS 2.0 or Atom feed into posts.
 
     `since` is a naive UTC datetime; items older than it are dropped at the
@@ -314,7 +315,9 @@ def fetch_feed(url, platform=None, limit=MAX_PER_SOURCE, since=None):
     and score a year of archive.
     """
     try:
-        resp = http_get(url)
+        # A retry after a rate-limited refusal must not replay the cached
+        # failure, or the backoff accomplishes nothing.
+        resp = http_get(url, use_cache=use_cache)
         resp.raise_for_status()
         # Some feeds (Bing) declare no charset and default to latin-1, which
         # mojibakes any non-ASCII text. Trust the XML declaration instead.
@@ -422,18 +425,32 @@ def fetch_reddit(query, limit=MAX_PER_SOURCE, subreddit=None, sort="new",
     search_url = "https://www.reddit.com/search/?q=%s&sort=%s" % (quote_plus(query), sort)
 
     def _rss_fallback(reason):
-        r = fetch_feed(rss, platform="Reddit", limit=limit, since=since)
-        if r["ok"] and r["posts"]:
-            r["note"] = "Fetched %d via Reddit RSS (%s)" % (len(r["posts"]), reason)
-            return r
-        # Reddit blocks datacenter IPs on both endpoints; try the mirrors next.
+        # Reddit rate-limits rather than blocks: measured from one IP, the RSS
+        # endpoint refuses roughly every other request and then serves the next
+        # one fine. Treating the first refusal as a permanent block threw away
+        # results that were one short retry away, so back off and try again.
+        attempts = 3
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(1.2 * attempt)
+            r = fetch_feed(rss, platform="Reddit", limit=limit, since=since,
+                           use_cache=False)
+            if r["ok"] and r["posts"]:
+                r["note"] = ("Fetched %d via Reddit RSS (%s%s)"
+                             % (len(r["posts"]), reason,
+                                ", retry %d" % (attempt + 1) if attempt else ""))
+                return r
+
+        # Still nothing: the mirrors are the last open route.
         mirrored = fetch_via_mirrors(query, "teddit", limit, since=since)
         if mirrored["ok"] and mirrored["posts"]:
             return mirrored
         return _result(
             False, blocked=True,
-            note=("Reddit blocked both the JSON API (%s) and RSS. This is an IP-level "
-                  "block, not a bad query -- open the search and collect manually." % reason),
+            note=("Reddit refused the JSON API (%s) and RSS after %d attempts. "
+                  "This is rate limiting on the source IP, not a bad query -- "
+                  "wait a minute and retry, or open the search and collect by "
+                  "hand." % (reason, attempts)),
             manual_url=search_url)
 
     try:

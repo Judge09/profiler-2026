@@ -25,7 +25,8 @@ from ..models import (Graph, IntelNote, MonitorCredential, MonitorFeed,
                       MonitorPost, MonitorWatch, Profile)
 from . import (authfetch, capabilities, collectors, engine, graphbuild,
                netintel, scoring, vault)
-from .keywords import rules_hash, spec_for, to_legacy_string
+from .keywords import (alias_hint, rules_hash, spec_for,
+                       to_legacy_string)
 from .keywords import rules_hash as keywords_rules_hash
 
 monitor = Blueprint("monitor", __name__, url_prefix="/monitor")
@@ -161,6 +162,9 @@ def _keyword_payload(watch, overrides=None):
         "query": spec.build_query(),
         "has_anchor": spec.has_anchor,
         "warning": _keyword_warning(spec),
+        # Search engines expand acronyms; the filter cannot guess the long
+        # form, so it asks rather than silently dropping the results.
+        "alias_hints": alias_hint([t.raw for t in spec.required]),
     }
 
 
@@ -2264,6 +2268,7 @@ def api_keywords():
         "query": spec.build_query(),
         "has_anchor": spec.has_anchor,
         "warning": _keyword_warning(spec),
+        "alias_hints": alias_hint([t.raw for t in spec.required]),
         "sample_result": result,
     })
 

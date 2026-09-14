@@ -69,6 +69,85 @@ def normalise(text):
              .replace("–", "-").replace("—", "-"))
 
 
+def _acronym_of(phrase):
+    """Initials of a multi-word phrase, when they look like a real acronym."""
+    # Split on whitespace only: "e-mail" is one hyphenated word, not two
+    # words whose initials mean anything.
+    words = [w for w in re.split(r"\s+", str(phrase or "").strip()) if w]
+    if len(words) < 2:
+        return ""
+    small = {"of", "the", "and", "in", "for", "a", "an", "de", "del", "da"}
+    letters = "".join(w[0] for w in words if w.lower() not in small)
+    return letters.upper() if 2 <= len(letters) <= 8 else ""
+
+
+def expand_aliases(raw):
+    """Alternative spellings a search engine will return for this term.
+
+    Search engines expand acronyms and synonyms; a keyword filter that matches
+    only the literal string then throws away exactly what the query asked for.
+    Searching "BARMM" returns posts saying "Bangsamoro" -- fetched, paid for,
+    and silently dropped.
+
+    Rather than ship a dictionary of world knowledge, this handles the two
+    mechanical cases that cause most of the damage:
+
+      * a multi-word phrase and its initials ("Bangsamoro Autonomous Region"
+        <-> "BARMM"), in either direction
+      * punctuation and spacing variants ("COMELEC" / "Comelec", "e-mail" /
+        "email")
+
+    Anything beyond that is a judgement call, so the UI suggests it and the
+    analyst decides -- see `alias_hint`. Writing `BARMM|Bangsamoro` by hand has
+    always worked and still does.
+    """
+    term = str(raw or "").strip()
+    if not term or term.startswith("/"):     # a regex means what it says
+        return []
+
+    body = term.strip('"')
+    out = []
+
+    acronym = _acronym_of(body)
+    if acronym and acronym.lower() != body.lower():
+        out.append(acronym)
+
+    # Hyphens and periods inside a word: "e-mail" also appears as "email",
+    # "U.S." as "US".
+    flat = re.sub(r"[.\-]", "", body)
+    if flat and flat.lower() != body.lower() and len(flat) >= 2:
+        out.append(flat)
+
+    seen, uniq = {body.lower()}, []
+    for a in out:
+        if a.lower() not in seen:
+            seen.add(a.lower())
+            uniq.append(a)
+    return uniq
+
+
+def alias_hint(terms):
+    """Suggest synonyms worth adding, for the UI to offer.
+
+    Deliberately advisory: the app cannot know that BARMM means Bangsamoro, but
+    it can notice that a bare acronym probably has a long form and ask.
+    """
+    hints = []
+    for t in terms:
+        body = str(t or "").strip().strip('"')
+        if not body or "|" in body or body.startswith("/"):
+            continue      # already an OR-group, or a regex
+        if body.isupper() and 3 <= len(body) <= 8 and " " not in body:
+            hints.append({
+                "term": body,
+                "why": ("%s is an acronym. Searches return its long form too, "
+                        "and those posts are currently dropped as off-topic."
+                        % body),
+                "suggest": "%s|<long form>" % body,
+            })
+    return hints
+
+
 class Term:
     """One keyword term, compiled to a matcher.
 
@@ -114,6 +193,12 @@ class Term:
                                  if a.strip().strip('"')]
         else:
             self.alternatives = [body]
+
+        # A term matches its own mechanical variants too, so a search that
+        # returns "U.S." for "US" is not then discarded by the filter.
+        for alias in expand_aliases(self.raw):
+            if alias.lower() not in {a.lower() for a in self.alternatives}:
+                self.alternatives.append(alias)
 
         parts = []
         for alt in self.alternatives:
