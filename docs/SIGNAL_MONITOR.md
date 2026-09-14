@@ -81,6 +81,32 @@ Google News, Bing News, all configured RSS feeds, Reddit, Hacker News,
 Mastodon, Lemmy, Wikipedia, YouTube channel feeds, any RSS/Atom URL, and any
 public web page.
 
+### Facebook and X
+
+Both are login-walled and block scripted requests, so neither can be scraped
+directly. What they do instead:
+
+1. **Collect what the search index already holds.** Google News honours a
+   `site:` restriction and indexes a useful amount of X and Facebook content,
+   including post text and timestamps. Results are filtered back to the
+   platform's own domains, so an index that quietly drops the restriction
+   cannot leak unrelated pages into a watch.
+2. **Recover the author where it is knowable** — from the post URL, or an
+   `@handle` in the text. Newsroom banners like `LOOK:` or `BARMM ELECTIONS |`
+   are deliberately *not* treated as accounts: a fabricated author would
+   silently corrupt the repeat-actor analysis.
+3. **Offer targeted follow-up searches.** Nine per platform — latest, top,
+   media-only, verified-only, hashtag, groups, pages, and date-restricted
+   Google dorks — rather than one generic link.
+
+A stored session in the **Vault** beats all of this, and an X API token beats
+that. Both are used automatically when present.
+
+Measured, so you know what to expect: Nitter mirrors now serve an anti-bot
+challenge page, Bing's RSS silently ignores `site:`, and `mbasic.facebook.com`
+returns 400 without a session. Those paths are still attempted, but they are
+not where the results come from.
+
 ### Sources needing an optional library
 
 Install with `pip install -r requirements-extra.txt`, or individually. The
@@ -91,7 +117,7 @@ what each missing piece needs.
 |---|---|---|
 | Reddit (API) | `praw` | Reddit app client id + secret |
 | Telegram channel | `telethon` | API id + hash (falls back to the public web preview without them) |
-| X (API) | `tweepy` | A **paid** X API tier — there is no free search |
+| X (API) | `tweepy` | A **paid** X API tier — there is no free search. Without it, X still collects from the index. |
 | Instagram profile | `instaloader` | Nothing, but Instagram rate-limits hard |
 | Video metadata | `yt-dlp` | Nothing |
 | Article extractor | `trafilatura` | Nothing |

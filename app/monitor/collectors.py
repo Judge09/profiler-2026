@@ -291,9 +291,17 @@ def _host(url):
         return ""
 
 
-def _result(ok=True, posts=None, note="", blocked=False, manual_url=""):
+def _result(ok=True, posts=None, note="", blocked=False, manual_url="",
+            dorks=None):
+    """One collector's outcome.
+
+    `dorks` carries targeted follow-up searches for the login-walled platforms,
+    where what the app can fetch is only part of the picture and the analyst
+    needs precise queries rather than a single generic link.
+    """
     return {"ok": ok, "posts": posts or [], "note": note,
-            "blocked": blocked, "manual_url": manual_url}
+            "blocked": blocked, "manual_url": manual_url,
+            "dorks": dorks or []}
 
 
 # -- RSS / Atom --------------------------------------------------------------
@@ -1254,6 +1262,359 @@ def dork_urls(query, domains=None):
     return out
 
 
+# -- Facebook and X ----------------------------------------------------------
+#
+# Both platforms are login-walled and block scripted requests hard. What used
+# to happen here was a single "open this search yourself" link, which is barely
+# a feature. What actually works, measured rather than assumed:
+#
+#   Google News with a site: restriction   WORKS -- returns real post text,
+#                                          author handles and timestamps
+#   Bing RSS with site:                    silently IGNORES the restriction and
+#                                          returns unrelated web results
+#   Nitter mirrors                         serve an anti-bot challenge page
+#   mbasic.facebook.com                    400s without a session
+#   syndication.twitter.com                429s
+#
+# So the strategy is: pull what the search indexes already hold, verify it
+# really came from the platform, and hand back precise dorks for the rest
+# instead of one generic link. A stored session (see authfetch.py) still beats
+# all of this when one is available.
+
+# Hosts that count as "really from this platform", so an index that quietly
+# drops the site: restriction cannot smuggle unrelated results into a watch.
+_PLATFORM_HOSTS = {
+    "facebook": ("facebook.com", "fb.com", "fb.watch", "m.facebook.com",
+                 "web.facebook.com", "mbasic.facebook.com"),
+    "x": ("x.com", "twitter.com", "mobile.twitter.com", "nitter.net"),
+}
+
+# Where a post's author lives in each platform's URL.
+_HANDLE_PATTERNS = {
+    "x": [re.compile(r"(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})(?:/status/\d+)?", re.I)],
+    "facebook": [
+        re.compile(r"facebook\.com/([A-Za-z0-9.\-]{3,60})/(?:posts|videos|photos)/", re.I),
+        re.compile(r"facebook\.com/(?:pg/)?([A-Za-z0-9.\-]{3,60})/?(?:\?|$)", re.I),
+    ],
+}
+
+# Newsroom section labels that lead a post but name no account.
+_SECTION_LABELS = {
+    "look", "watch", "read", "breaking", "just in", "update", "updates",
+    "live", "developing", "exclusive", "opinion", "editorial", "analysis",
+    "explainer", "in photos", "in numbers", "timeline", "recap", "fact check",
+    "alert", "advisory", "news", "video", "photo", "story", "special report",
+}
+
+# URL segments that are Facebook/X plumbing, never an account name.
+_NOT_A_HANDLE = {
+    "search", "hashtag", "i", "home", "explore", "notifications", "messages",
+    "settings", "login", "share", "intent", "watch", "events", "groups",
+    "marketplace", "pages", "profile.php", "permalink.php", "story.php",
+    "photo.php", "video.php", "help", "policies", "privacy", "terms", "about",
+    "status", "statuses", "media", "likes", "with_replies",
+}
+
+
+def _platform_handle(url, kind):
+    """Pull the author's handle out of a post URL, or '' when it is not one."""
+    for rx in _HANDLE_PATTERNS.get(kind, []):
+        m = rx.search(url or "")
+        if not m:
+            continue
+        handle = (m.group(1) or "").strip(".")
+        if handle.lower() in _NOT_A_HANDLE or not handle:
+            continue
+        return handle
+    return ""
+
+
+def _is_platform_url(url, kind):
+    host = _host(url)
+    return any(host == h or host.endswith("." + h)
+               for h in _PLATFORM_HOSTS.get(kind, ()))
+
+
+def _social_via_index(kind, query, limit, since, extra_terms=None):
+    """Search the news index for posts the platform itself will not serve.
+
+    Google News indexes a surprising amount of X and Facebook content, and --
+    unlike Bing -- it honours `site:`. Results are filtered back down to the
+    platform's own hosts so a silently-dropped restriction cannot leak
+    unrelated pages into the watch.
+    """
+    sites = _PLATFORM_HOSTS[kind][:2]  # the two canonical domains
+    site_clause = " OR ".join("site:" + s for s in sites)
+    q = "(%s) %s" % (site_clause, query)
+    if extra_terms:
+        q += " " + extra_terms
+
+    url = ("https://news.google.com/rss/search?q=%s&hl=en-US&gl=US&ceid=US:en"
+           % quote_plus(q))
+    r = fetch_feed(url, platform=("X" if kind == "x" else "Facebook"),
+                   limit=limit * 3, since=since)
+    if not r["ok"]:
+        return [], r["note"]
+
+    label = "X" if kind == "x" else "Facebook"
+    hosts = _PLATFORM_HOSTS[kind]
+    posts, seen = [], set()
+    for p in r["posts"]:
+        # Google News puts the publisher in `author` -- literally "x.com" or
+        # "facebook.com" for these. That is the origin claim we can check,
+        # because the " - x.com" suffix has already been stripped from the
+        # text by the feed parser. A direct platform URL counts too.
+        claimed = (p.get("author") or "").strip().lower() in hosts
+        direct = _is_platform_url(p.get("url") or "", kind)
+        if not claimed and not direct:
+            continue
+
+        text = p.get("text") or ""
+        # The aggregator tags the origin onto the end, sometimes after a dash
+        # and sometimes not, so strip it either way rather than leaving
+        # "facebook.com" dangling on the end of a post.
+        body = re.sub(r"(?:\s[-–]\s|\s+)"
+                      r"(?:x|twitter|facebook|fb)\.com\s*$",
+                      "", text.strip(), flags=re.I)
+        # Aggregator titles repeat the body as "headline — body"; keep the
+        # longer half rather than storing the sentence twice.
+        if " — " in body:
+            head, _, tail = body.partition(" — ")
+            if tail.startswith(head[:40]):
+                body = tail
+        body = body.strip()
+        if len(body) < 25:
+            continue
+
+        key = body[:180].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        handle = _platform_handle(p.get("url") or "", kind)
+
+        # With an opaque aggregator link there is no URL to read a handle from,
+        # but posts routinely carry the account in the text: an "@handle", a
+        # "Page Name:" prefix, or a shouted "SECTION |" banner. Recovering it
+        # is the difference between 40 posts all attributed to "Facebook" and
+        # 40 posts you can actually group by who said them.
+        if not handle:
+            m = re.search(r"(?:^|\s)@([A-Za-z0-9_.]{3,30})", body)
+            if m and m.group(1).lower() not in _NOT_A_HANDLE:
+                handle = m.group(1)
+
+        # A "Name." or "Name:" prefix is a real byline; an ALL-CAPS banner like
+        # "BARMM ELECTIONS |" or "LOOK:" is a headline the outlet shouted, not
+        # an account. Guessing wrong is worse than not guessing, because a
+        # fabricated author silently corrupts the repeat-actor analysis.
+        author = handle
+        if not author:
+            m = re.match(r"([A-Z][\w.'&-]*(?:\s+[A-Z][\w.'&-]*){0,3})\s*[.:|]\s", body)
+            if m:
+                cand = m.group(1).strip().rstrip(".")
+                # Newsroom banners are section labels, not accounts: an
+                # all-caps prefix is always one, and the common ones show up
+                # title-cased too ("Watch:", "Look:").
+                shouted = cand.upper() == cand
+                if (3 <= len(cand) <= 50 and not shouted
+                        and cand.lower() not in _SECTION_LABELS):
+                    author = cand
+        if not author:
+            author = label
+
+        posts.append({
+            "platform": label,
+            "author": author[:120],
+            "handle": handle,
+            "verified": False,
+            "text": body[:4000],
+            "url": p.get("url") or "",
+            "link_kind": p.get("link_kind") or "search",
+            "posted_at": p.get("posted_at"),
+            "source_url": url,
+            "extra": {"via": "news-index"},
+        })
+        if len(posts) >= limit:
+            break
+
+    return posts, "Found %d %s post(s) in the news index" % (len(posts), label)
+
+
+def _social_dorks(kind, query, domains=None):
+    """Targeted searches for what the index does not reach.
+
+    One generic link is not much help. These are the queries an analyst would
+    actually type: recent posts, the discussion around a hashtag, named pages,
+    and the platform's own search with a live filter.
+    """
+    q = quote_plus(query)
+    bare = re.sub(r"[^A-Za-z0-9 ]", "", query).strip()
+    tag = quote_plus(bare.split()[0]) if bare.split() else q
+
+    if kind == "x":
+        return [
+            {"label": "X search — latest",
+             "url": "https://x.com/search?q=%s&f=live" % q},
+            {"label": "X search — top",
+             "url": "https://x.com/search?q=%s&f=top" % q},
+            {"label": "X — links only",
+             "url": "https://x.com/search?q=%s%%20filter%%3Alinks&f=live" % q},
+            {"label": "X — media only",
+             "url": "https://x.com/search?q=%s%%20filter%%3Amedia&f=live" % q},
+            {"label": "X — verified accounts",
+             "url": "https://x.com/search?q=%s%%20filter%%3Averified&f=live" % q},
+            {"label": "X — replies excluded",
+             "url": "https://x.com/search?q=%s%%20-filter%%3Areplies&f=live" % q},
+            {"label": "Hashtag #%s" % bare.split()[0] if bare.split() else "Hashtag",
+             "url": "https://x.com/hashtag/%s?f=live" % tag},
+            {"label": "Google — x.com posts",
+             "url": "https://www.google.com/search?q=%s" % quote_plus(
+                 "site:x.com OR site:twitter.com " + query)},
+            {"label": "Google — last 24h on x.com",
+             "url": "https://www.google.com/search?tbs=qdr:d&q=%s" % quote_plus(
+                 "site:x.com " + query)},
+        ]
+
+    return [
+        {"label": "Facebook — posts",
+         "url": "https://www.facebook.com/search/posts?q=%s" % q},
+        {"label": "Facebook — pages",
+         "url": "https://www.facebook.com/search/pages?q=%s" % q},
+        {"label": "Facebook — groups",
+         "url": "https://www.facebook.com/search/groups?q=%s" % q},
+        {"label": "Facebook — people",
+         "url": "https://www.facebook.com/search/people?q=%s" % q},
+        {"label": "Facebook — videos",
+         "url": "https://www.facebook.com/search/videos?q=%s" % q},
+        {"label": "Hashtag #%s" % (bare.split()[0] if bare.split() else ""),
+         "url": "https://www.facebook.com/hashtag/%s" % tag},
+        {"label": "Google — facebook.com",
+         "url": "https://www.google.com/search?q=%s" % quote_plus(
+             "site:facebook.com " + query)},
+        {"label": "Google — last 24h on facebook.com",
+         "url": "https://www.google.com/search?tbs=qdr:d&q=%s" % quote_plus(
+             "site:facebook.com " + query)},
+        {"label": "Google — public group posts",
+         "url": "https://www.google.com/search?q=%s" % quote_plus(
+             "site:facebook.com/groups " + query)},
+    ]
+
+
+def fetch_x(query, limit=MAX_PER_SOURCE, since=None, handle=None, use_api=True):
+    """Collect X posts through whatever route is actually open.
+
+    Order of preference: the official API when a token exists, then the news
+    index, then mirrors, then honest dorks. Each fallback explains itself, so
+    an empty result never looks like "nothing was posted".
+    """
+    manual = "https://x.com/search?q=%s&f=live" % quote_plus(query)
+
+    # 1. The official API, if a token is configured.
+    if use_api and (_cred("twitter", "bearer_token")
+                    or os.environ.get("TWITTER_BEARER_TOKEN")):
+        api = fetch_tweepy(query, limit, since)
+        if api["ok"] and api["posts"]:
+            return api
+
+    notes = []
+    posts = []
+
+    # 2. What the news index already holds.
+    if handle:
+        indexed, note = _social_via_index("x", "from:%s %s" % (handle, query),
+                                          limit, since)
+    else:
+        indexed, note = _social_via_index("x", query, limit, since)
+    posts.extend(indexed)
+    notes.append(note)
+
+    # 3. Mirrors, which are usually down but cost little to try.
+    if len(posts) < limit:
+        mirrored = fetch_via_mirrors(query, "nitter", limit - len(posts), since=since)
+        if mirrored["ok"] and mirrored["posts"]:
+            posts.extend(mirrored["posts"])
+            notes.append("plus %d via a Nitter mirror" % len(mirrored["posts"]))
+
+    dorks = _social_dorks("x", query)
+    if posts:
+        return _result(True, posts[:limit],
+                       "%s. X blocks direct scraping, so these came from the "
+                       "search index -- open the dork links for the rest."
+                       % "; ".join(n for n in notes if n),
+                       manual_url=manual, dorks=dorks)
+
+    return _result(
+        False, blocked=True,
+        note=("X serves no public search and its mirrors are offline. "
+              "%s. Use the dork links, a stored session in the vault, or an "
+              "API token." % (notes[0] if notes else "Nothing in the index")),
+        manual_url=manual, dorks=dorks)
+
+
+def fetch_facebook(query, limit=MAX_PER_SOURCE, since=None, page=None):
+    """Collect Facebook posts through whatever route is actually open.
+
+    Facebook has no public search API and blocks unauthenticated requests.
+    Public *pages* do still publish readable content, so a named page is worth
+    fetching directly; otherwise fall back to the index and dorks.
+    """
+    manual = "https://www.facebook.com/search/posts?q=%s" % quote_plus(query)
+    notes, posts = [], []
+
+    # 1. A named public page, which sometimes renders without a session.
+    if page:
+        name = re.sub(r"^https?://(?:www\.|m\.|mbasic\.)?facebook\.com/", "",
+                      str(page)).strip("/").split("?")[0]
+        for host in ("mbasic.facebook.com", "m.facebook.com"):
+            try:
+                resp = http_get("https://%s/%s" % (host, quote_plus(name)))
+                if resp.status_code == 200 and "login" not in resp.url.lower():
+                    blocks = re.findall(
+                        r"(?is)<(?:p|div)[^>]*>([^<]{60,1200})</(?:p|div)>", resp.text)
+                    for b in blocks[:limit]:
+                        text = _clean(b)
+                        if len(text) < 60:
+                            continue
+                        posts.append({
+                            "platform": "Facebook", "author": name,
+                            "handle": name, "verified": False,
+                            "text": text[:4000],
+                            "url": "https://www.facebook.com/" + name,
+                            "link_kind": "direct", "posted_at": None,
+                            "source_url": resp.url,
+                        })
+                    if posts:
+                        notes.append("read %d block(s) from the public page" % len(posts))
+                        break
+            except requests.exceptions.RequestException:
+                continue
+        if not posts:
+            notes.append("the public page did not render without a session")
+
+    # 2. The news index.
+    if len(posts) < limit:
+        indexed, note = _social_via_index(
+            "facebook", ('"%s" %s' % (page, query)) if page else query,
+            limit - len(posts), since)
+        posts.extend(indexed)
+        notes.append(note)
+
+    dorks = _social_dorks("facebook", query)
+    if posts:
+        return _result(True, posts[:limit],
+                       "%s. Facebook blocks direct scraping, so most of this came "
+                       "from the search index -- open the dork links for the rest."
+                       % "; ".join(n for n in notes if n),
+                       manual_url=manual, dorks=dorks)
+
+    return _result(
+        False, blocked=True,
+        note=("Facebook has no public search and blocks unauthenticated "
+              "requests. %s. Use the dork links, or add a session to the vault."
+              % "; ".join(n for n in notes if n)),
+        manual_url=manual, dorks=dorks)
+
+
 # -- Dispatch ----------------------------------------------------------------
 
 def _opt(o, key, default=None):
@@ -1315,10 +1676,16 @@ COLLECTORS = {
     # dork-only
     "pastes": lambda q, o: fetch_paste_dorks(q, _opt(o, "limit", MAX_PER_SOURCE),
                                              _opt(o, "since")),
-    "facebook": lambda q, o: manual_only("facebook", q),
+    # Facebook and X now collect what the search index holds and return
+    # targeted dorks for the rest, rather than one generic link.
+    "facebook": lambda q, o: fetch_facebook(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                            _opt(o, "since"),
+                                            _opt(o, "page") or _opt(o, "url")),
+    "x": lambda q, o: fetch_x(q, _opt(o, "limit", MAX_PER_SOURCE),
+                              _opt(o, "since"),
+                              _opt(o, "handle") or _opt(o, "url")),
     "instagram": lambda q, o: manual_only("instagram", q),
     "tiktok": lambda q, o: manual_only("tiktok", q),
-    "x": lambda q, o: manual_only("x", q),
     "linkedin": lambda q, o: manual_only("linkedin", q),
 }
 
@@ -1379,10 +1746,13 @@ SOURCE_META = [
     {"key": "pastes", "name": "Paste sites", "live": False, "group": "Reference",
      "desc": "Dork for leaked data on pastebin and friends. Opens the search."},
 
-    {"key": "x", "name": "X (Twitter)", "live": False, "group": "Login-walled",
-     "desc": "Login-walled. Opens the search for manual collection."},
-    {"key": "facebook", "name": "Facebook", "live": False, "group": "Login-walled",
-     "desc": "Login-walled. Opens the search for manual collection."},
+    {"key": "x", "name": "X (Twitter)", "live": True, "group": "Social",
+     "needs_url": False,
+     "desc": "Pulls indexed X posts, then gives targeted dorks. Uses the API "
+             "or a vault session when one exists."},
+    {"key": "facebook", "name": "Facebook", "live": True, "group": "Social",
+     "desc": "Pulls indexed Facebook posts and public pages, then gives "
+             "targeted dorks. Add a page name to read it directly."},
     {"key": "instagram", "name": "Instagram", "live": False, "group": "Login-walled",
      "desc": "Login-walled. Opens the tag page for manual collection."},
     {"key": "tiktok", "name": "TikTok", "live": False, "group": "Login-walled",
@@ -1453,6 +1823,10 @@ def collect(source_keys, query, options=None, max_workers=8, since=None):
             report.append({"source": key, "ok": r["ok"], "count": len(r["posts"]),
                            "note": r["note"], "blocked": r["blocked"],
                            "manual_url": r["manual_url"],
+                           # Targeted follow-up searches for the login-walled
+                           # platforms, where what we can fetch is only part
+                           # of the picture.
+                           "dorks": r.get("dorks") or [],
                            "elapsed": round(elapsed, 2)})
 
     report.sort(key=lambda r: (not r["ok"], r["source"]))

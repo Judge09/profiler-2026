@@ -118,6 +118,60 @@ class KeywordTests(unittest.TestCase):
         self.assertEqual(keywords.rules_hash(a), keywords.rules_hash(dict(a)))
 
 
+class SocialCollectorTests(unittest.TestCase):
+    """Facebook and X: attribution and origin filtering, no network."""
+
+    def test_handle_from_post_url(self):
+        from app.monitor import collectors as C
+        self.assertEqual(
+            C._platform_handle("https://x.com/comelec_ph/status/1", "x"),
+            "comelec_ph")
+        self.assertEqual(
+            C._platform_handle("https://www.facebook.com/NAMFREL/posts/9",
+                               "facebook"), "NAMFREL")
+
+    def test_platform_plumbing_is_not_a_handle(self):
+        """/search and /groups are routes, not accounts."""
+        from app.monitor import collectors as C
+        for url, kind in [("https://x.com/search?q=a", "x"),
+                          ("https://x.com/i/status/1", "x"),
+                          ("https://www.facebook.com/groups/123", "facebook"),
+                          ("https://www.facebook.com/profile.php?id=1", "facebook")]:
+            self.assertEqual(C._platform_handle(url, kind), "", url)
+
+    def test_origin_host_check(self):
+        from app.monitor import collectors as C
+        self.assertTrue(C._is_platform_url("https://x.com/a/status/1", "x"))
+        self.assertTrue(C._is_platform_url("https://mobile.twitter.com/a", "x"))
+        self.assertTrue(C._is_platform_url("https://m.facebook.com/a", "facebook"))
+        # Bing silently drops `site:`, so unrelated hosts must be rejected.
+        self.assertFalse(C._is_platform_url("https://bangsamoro.gov.ph/", "x"))
+        self.assertFalse(C._is_platform_url("https://en.wikipedia.org/", "facebook"))
+
+    def test_lookalike_domain_rejected(self):
+        """facebook.com.evil.tld must not pass as Facebook."""
+        from app.monitor import collectors as C
+        self.assertFalse(
+            C._is_platform_url("https://facebook.com.evil.tld/x", "facebook"))
+
+    def test_dorks_are_platform_specific(self):
+        from app.monitor import collectors as C
+        x = C._social_dorks("x", "BARMM election")
+        fb = C._social_dorks("facebook", "BARMM election")
+        self.assertGreaterEqual(len(x), 8)
+        self.assertGreaterEqual(len(fb), 8)
+        self.assertTrue(any("f=live" in d["url"] for d in x))
+        self.assertTrue(any("filter%3Averified" in d["url"] for d in x))
+        self.assertTrue(any("/search/groups" in d["url"] for d in fb))
+        self.assertTrue(all(d["url"].startswith("https://") for d in x + fb))
+
+    def test_result_carries_dorks(self):
+        from app.monitor import collectors as C
+        r = C._result(False, note="x", dorks=[{"label": "a", "url": "https://a"}])
+        self.assertEqual(len(r["dorks"]), 1)
+        self.assertEqual(C._result(True)["dorks"], [])
+
+
 class NetIntelTests(unittest.TestCase):
     """Indicator extraction and phishing heuristics (no network)."""
 

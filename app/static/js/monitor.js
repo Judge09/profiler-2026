@@ -1051,12 +1051,21 @@
       rep.innerHTML = data.report.sources.map((r) => {
         const cls = r.ok ? 's-ok' : (r.blocked ? 's-blocked' : 's-bad');
         const icon = r.ok ? '✓' : (r.blocked ? '⚠' : '✕');
+        // Facebook and X return targeted follow-up searches, because what the
+        // index holds is only part of what is on the platform.
+        const dorks = (r.dorks || []).length
+          ? '<div class="mon-dorks">' +
+            '<span class="lbl">Search directly:</span>' +
+            r.dorks.map((d) => '<a href="' + esc(d.url) + '" target="_blank" ' +
+              'rel="noopener noreferrer">' + esc(d.label) + '</a>').join('') +
+            '</div>'
+          : '';
         return '<div><span class="' + cls + '">' + icon + '</span>' +
           '<span class="src">' + esc(r.source) + '</span>' +
           '<span style="flex:1">' + esc(r.note) + '</span>' +
           (r.elapsed ? '<span class="ms">' + r.elapsed + 's</span>' : '') +
-          (r.manual_url ? '<a href="' + esc(r.manual_url) + '" target="_blank" rel="noopener noreferrer">open search</a>' : '') +
-          '</div>';
+          (r.manual_url && !dorks ? '<a href="' + esc(r.manual_url) + '" target="_blank" rel="noopener noreferrer">open search</a>' : '') +
+          '</div>' + dorks;
       }).join('') + '<div style="border:0"><span class="s-ok">→</span><span style="flex:1">' +
         '<b>' + data.added + '</b> added, ' + data.skipped + ' duplicate' +
         (data.off_topic ? ', <span class="s-blocked">' + data.off_topic + ' off-topic dropped</span>' : '') +

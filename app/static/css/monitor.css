@@ -342,3 +342,11 @@
    than reserving 345px for a panel of zeroes. */
 .mon-brief.empty .mon-brief-head { border-bottom: 0; }
 .mon-brief.empty h3 { font-size: 15px; }
+
+/* Follow-up searches for the login-walled platforms. What the index holds is
+   only part of what is on the platform, so these are the queries an analyst
+   would otherwise have to type by hand. */
+.mon-dorks { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 7px 0 9px 26px; border: 0 !important; }
+.mon-dorks .lbl { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; margin-right: 3px; }
+.mon-dorks a { font-size: 11px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 11px; color: var(--text-dim); text-decoration: none; background: var(--bg-input); white-space: nowrap; }
+.mon-dorks a:hover { border-color: var(--accent); color: var(--accent); }
