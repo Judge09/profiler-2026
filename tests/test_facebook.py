@@ -229,6 +229,22 @@ class CommentTests(unittest.TestCase):
         # The action links are chrome, not what the person wrote.
         self.assertNotIn("Like", rows[0]["text"])
 
+    def test_the_like_counter_is_not_glued_onto_the_comment(self):
+        # mbasic puts the like count in a bare <span> in the action row, so
+        # stripping links and <abbr> leaves a stray number on the end of every
+        # comment -- which corrupts both the text and the dedupe key.
+        markup = ('<html><body><div id="98765432109">'
+                  '<h3><a href="/someone">Someone</a></h3>'
+                  '<div>This advisory is fake, do not share it.</div>'
+                  '<div><abbr>2 hrs</abbr>'
+                  '<a href="/a/comment.php?like_comment_id=1">Like</a>'
+                  '<span>12</span></div>'
+                  '</div></body></html>')
+        rows = fb.parse_comments(markup, parent_url="https://www.facebook.com/x")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"],
+                         "This advisory is fake, do not share it.")
+
     def test_paging_follows_view_more_and_stops_without_repeating(self):
         original = fb._get
         fb._get = _stub({"p=10": COMMENTS_P2, "permalink.php": COMMENTS_P1})
@@ -258,6 +274,112 @@ class CommentTests(unittest.TestCase):
         result = fb.collect_comments("https://example.com/thread")
         self.assertFalse(result["ok"])
         self.assertIn("not a Facebook post", result["note"])
+
+
+class RefusalTests(unittest.TestCase):
+    """Being refused must never be reported as "nothing found".
+
+    Facebook now answers HTTP 400 for every logged-out mbasic request. Saying
+    "no comments found on that post" for that reads as "this post has no
+    comments" and sends the analyst to check the wrong thing entirely.
+    """
+
+    def _refusing(self, status):
+        def get(url, session=None, timeout=20):
+            return _Resp("<html><head><title>Error</title></head></html>",
+                         url, status)
+        return get
+
+    def test_a_400_on_comments_is_reported_as_a_block(self):
+        original = fb._get
+        fb._get = self._refusing(400)
+        try:
+            result = fb.collect_comments(
+                "https://www.facebook.com/PageName/posts/123")
+        finally:
+            fb._get = original
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocked"], "a refusal must be marked blocked")
+        self.assertNotIn("No comments found", result["note"])
+        self.assertIn("400", result["note"])
+        # It must say what to do about it.
+        self.assertIn("vault", result["note"].lower())
+
+    def test_a_400_on_a_page_is_reported_as_a_block(self):
+        original = fb._get
+        fb._get = self._refusing(400)
+        try:
+            result = fb.collect_page("NAMFREL")
+        finally:
+            fb._get = original
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocked"])
+        self.assertIn("vault", result["note"].lower())
+
+    def test_a_404_says_the_post_is_gone_not_that_a_session_is_needed(self):
+        original = fb._get
+        fb._get = self._refusing(404)
+        try:
+            result = fb.collect_comments(
+                "https://www.facebook.com/PageName/posts/123")
+        finally:
+            fb._get = original
+        self.assertIn("does not exist", result["note"])
+        self.assertNotIn("vault", result["note"].lower())
+
+    def test_rate_limiting_says_to_wait(self):
+        original = fb._get
+        fb._get = self._refusing(429)
+        try:
+            result = fb.collect_comments(
+                "https://www.facebook.com/PageName/posts/123")
+        finally:
+            fb._get = original
+        self.assertIn("rate-limit", result["note"])
+
+    def test_the_advice_differs_when_a_session_was_already_used(self):
+        # "Add a session" is unhelpful when one was used and rejected.
+        without = fb._session_advice(None)
+        with_session = fb._session_advice(object())
+        self.assertIn("Add a Facebook session", without)
+        self.assertIn("expired", with_session)
+
+    def test_a_page_that_loads_but_yields_nothing_is_not_a_refusal(self):
+        # An empty Page is a different situation from a blocked one, and must
+        # not claim a session would fix it.
+        original = fb._get
+        fb._get = _stub({"NAMFREL": "<html><body><div>nothing here</div></body></html>"})
+        try:
+            result = fb.collect_page("NAMFREL")
+        finally:
+            fb._get = original
+        self.assertFalse(result["ok"])
+        self.assertIn("no posts were found", result["note"])
+
+
+class HandleExtractionTests(unittest.TestCase):
+    """Commenters must keep an identity to group and correlate on."""
+
+    def test_vanity_and_numeric_accounts_both_resolve(self):
+        self.assertEqual(fb._handle_from_href("/juan.delacruz.9?fref=ufi"),
+                         "juan.delacruz.9")
+        self.assertEqual(
+            fb._handle_from_href("/profile.php?id=100078888&fref=ufi"),
+            "profile.php?id=100078888")
+
+    def test_the_host_is_never_mistaken_for_a_handle(self):
+        # Matching "/name" loosely against a full URL returns the host from
+        # the "//" in "https://", which tagged every commenter as
+        # "www.facebook.com".
+        for href in ["https://www.facebook.com/bob.smith",
+                     "//www.facebook.com/bob.smith"]:
+            self.assertEqual(fb._handle_from_href(href), "bob.smith", href)
+
+    def test_plumbing_paths_yield_no_handle(self):
+        for href in ["/groups/123", "/story.php?story_fbid=1",
+                     "/a/comment.php?x=1", ""]:
+            self.assertEqual(fb._handle_from_href(href), "", href)
 
 
 class PageCollectionTests(unittest.TestCase):
@@ -495,6 +617,23 @@ class CollectorWiringTests(unittest.TestCase):
         result = collectors.fetch_fb_comments("BARMM", url=None)
         self.assertFalse(result["ok"])
         self.assertIn("URL", result["note"])
+        # It must show what a usable URL looks like, not just demand one.
+        self.assertIn("facebook.com", result["note"])
+
+    def test_a_date_window_that_drops_everything_is_not_reported_as_success(self):
+        # Returning ok=True with zero posts reads as "collected nothing, all
+        # fine" -- the analyst needs to know their window was the cause.
+        from datetime import datetime as _dt, timedelta as _td
+        original = fb._get
+        fb._get = _stub({"permalink.php": COMMENTS_P1, "story.php": COMMENTS_P1})
+        try:
+            result = collectors.fetch_fb_comments(
+                "x", url="https://www.facebook.com/permalink.php?story_fbid=222",
+                since=_dt.utcnow() + _td(days=1))   # a window nothing can match
+        finally:
+            fb._get = original
+        self.assertFalse(result["ok"])
+        self.assertIn("date window", result["note"])
 
 
 if __name__ == "__main__":

@@ -9,18 +9,24 @@ not possible at all.
 
 What this module can and cannot reach, measured rather than assumed:
 
-    public Page timeline, no session     partially -- Facebook A/B-tests a
-                                         login wall on mbasic; when it is shown
-                                         we say so instead of returning nothing
-    public Page timeline, vault session  yes, reliably
-    permalink for a single post          yes, when the post itself is public
-    comments under a public post         yes, including paging through
-                                         "View more comments"
-    groups, private pages, profiles      only with a session that can see them
-    search                               no -- mbasic search is login-walled
+    ANY request without a session      no -- Facebook answers HTTP 400 with an
+                                       "Error" page for every logged-out mbasic
+                                       request, Pages and permalinks alike
+    public Page timeline, session      yes
+    permalink for a single post        yes, when the post itself is public
+    comments under a public post       yes, including paging through
+                                       "View more comments"
+    groups, private pages, profiles    only what that account can see
+    search                             no -- mbasic search is login-walled
 
-So a session in the vault is what turns this from "sometimes" into "reliably".
-`collect_page` accepts one and works without it, reporting honestly either way.
+So a vaulted session is now a requirement, not an upgrade. The unauthenticated
+path is kept because the failure has to be *explained*: an empty result is
+reported as "Facebook refused the request, add a session", never as "no
+comments found", which reads as "this post has no comments" and sends the
+analyst to check entirely the wrong thing.
+
+Sessions are short-lived -- cookies expire in days and scripted sessions get
+challenged -- so a rejected one is reported distinctly from a missing one.
 
 Parsing approach
 ----------------
@@ -276,6 +282,37 @@ def _post_id(url):
     return m.group(1) if m else ""
 
 
+def _handle_from_href(href):
+    """The account a comment's author link points at, or "".
+
+    Two shapes matter: a vanity name (`/juan.delacruz.9`) and a numeric account
+    (`/profile.php?id=100078888`). Numeric ones are common -- most people never
+    set a vanity URL -- and dropping them left half a thread's commenters with
+    no identity to group or correlate on.
+    """
+    raw = str(href or "")
+    if not raw:
+        return ""
+    m = re.search(r"profile\.php\?(?:[^\"'&]*&)?id=(\d{5,})", raw)
+    if m:
+        return "profile.php?id=" + m.group(1)
+
+    # Take the first path segment, never the host: matching "/name" loosely
+    # against a full URL happily returns "www.facebook.com" from the "//" in
+    # "https://".
+    if raw.startswith("//"):          # protocol-relative: //host/name
+        raw = "https:" + raw
+    try:
+        path = urlparse(raw if "://" in raw else "https://x" + (
+            raw if raw.startswith("/") else "/" + raw)).path or ""
+    except ValueError:
+        return ""
+    segment = next((s for s in path.split("/") if s), "")
+    if not segment or segment.lower() in _RESERVED:
+        return ""
+    return segment if re.match(r"^[A-Za-z0-9.\-]{3,60}$", segment) else ""
+
+
 def _story_nodes(soup):
     """Every element that looks like one story on an mbasic timeline.
 
@@ -484,14 +521,16 @@ def parse_comments(markup, parent_url="", parent_author="", limit=100):
             tag.decompose()
 
         text = _clean(work.get_text(" "))
+        # mbasic puts the like counter in a bare <span> in the action row, so
+        # stripping links and <abbr> leaves a stray number glued to the end of
+        # every comment ("...do not share it. 12"). It is not part of what the
+        # person wrote, and it corrupts both the text and the dedupe key.
+        text = re.sub(r"\s*\d[\d,.]*\s*$", "", text).strip()
         if len(text) < 2:
             continue
         seen.add(cid)
 
-        handle = ""
-        m = re.search(r"facebook\.com/([A-Za-z0-9.\-]{3,60})", _abs(author_href) or "")
-        if m and m.group(1).lower() not in _RESERVED:
-            handle = m.group(1)
+        handle = _handle_from_href(_abs(author_href) or author_href)
 
         stamp = None
         abbr = node.find("abbr")
@@ -592,6 +631,41 @@ def _default_budget():
     return max(10, int(configured * 0.6))
 
 
+def _session_advice(session):
+    """What to do next, depending on whether a session was already used."""
+    if session is None:
+        return ("Facebook no longer serves this content to logged-out "
+                "requests. Add a Facebook session to the vault (Monitor > "
+                "Vault > paste your cookies), then collect again.")
+    return ("The stored session was rejected -- its cookies have most likely "
+            "expired, or the account hit a checkpoint. Re-paste fresh cookies "
+            "in the vault.")
+
+
+def _refusal(status, session, what="page"):
+    """Explain a non-200 from Facebook in terms of what to do about it.
+
+    Facebook answers 400 with an "Error" page for *any* unauthenticated
+    request to mbasic now -- Pages, permalinks and comment threads alike. That
+    used to be reported as "no comments found", which reads as "this post has
+    no comments" and sends people looking in the wrong place.
+    """
+    if status in (400, 401, 403):
+        return ("Facebook refused the request (HTTP %d) without serving the "
+                "%s. %s" % (status, what, _session_advice(session)))
+    if status == 404:
+        return ("Facebook says that %s does not exist. It may have been "
+                "deleted, or it may be private." % what)
+    if status == 429:
+        return ("Facebook is rate-limiting this address (HTTP 429). Wait a "
+                "few minutes before collecting again.")
+    if 500 <= status < 600:
+        return ("Facebook returned a server error (HTTP %d). This is usually "
+                "temporary -- try again shortly." % status)
+    return ("Facebook answered HTTP %d instead of the %s. %s"
+            % (status, what, _session_advice(session)))
+
+
 def _get(url, session=None, timeout=20):
     """One GET, through a vault session when there is one."""
     if session is not None:
@@ -626,15 +700,15 @@ def collect_page(page, limit=25, session=None, since=None, with_comments=False,
         return _result(False, note="No Facebook Page called '%s'." % name,
                        manual_url="https://www.facebook.com/" + name)
     if resp.status_code != 200:
-        return _result(False, note="Facebook answered %d for that Page."
-                                   % resp.status_code,
+        return _result(False, blocked=True,
+                       note=_refusal(resp.status_code, session),
                        manual_url="https://www.facebook.com/" + name)
 
     if _looks_like_login(getattr(resp, "url", url), resp.text):
         return _result(
             False, blocked=True,
-            note=("Facebook served a login wall for that Page. Add a session "
-                  "to the vault, or open the Page and collect by hand."),
+            note=("Facebook served a login wall for that Page. %s"
+                  % _session_advice(session)),
             manual_url="https://www.facebook.com/" + name)
 
     posts = parse_timeline(resp.text, page=name, limit=limit)
@@ -693,6 +767,7 @@ def collect_comments(post_url, limit=50, session=None, parent_author="",
         return _result(False, note="That is not a Facebook post URL.")
 
     collected, seen, pages, note_extra = [], set(), 0, ""
+    refused = ""      # why Facebook would not serve the page, when it would not
     while url and pages < max_pages and len(collected) < limit:
         pages += 1
         try:
@@ -704,7 +779,10 @@ def collect_comments(post_url, limit=50, session=None, parent_author="",
             note_extra = " (stopped: %s)" % type(e).__name__
             break
         if resp.status_code != 200:
-            note_extra = " (Facebook answered %d)" % resp.status_code
+            if collected:
+                note_extra = " (Facebook answered %d and paging stopped)" % resp.status_code
+            else:
+                refused = _refusal(resp.status_code, session, "post")
             break
         if _looks_like_login(getattr(resp, "url", url), resp.text):
             if collected:
@@ -712,8 +790,8 @@ def collect_comments(post_url, limit=50, session=None, parent_author="",
                 break
             return _result(
                 False, blocked=True,
-                note=("Facebook served a login wall for that post. Add a "
-                      "session to the vault to read its comments."),
+                note=("Facebook served a login wall for that post. %s"
+                      % _session_advice(session)),
                 manual_url=post_url)
 
         batch = parse_comments(resp.text, parent_url=_abs(post_url),
@@ -729,8 +807,17 @@ def collect_comments(post_url, limit=50, session=None, parent_author="",
         url = _next_comment_page(resp.text)
 
     if not collected:
-        return _result(False, note="No comments found on that post%s." % note_extra,
-                       manual_url=post_url)
+        if refused:
+            # Being refused is not the same as there being nothing to read, and
+            # saying "no comments found" sends the analyst to check the wrong
+            # thing entirely.
+            return _result(False, blocked=True, note=refused, manual_url=post_url)
+        return _result(
+            False,
+            note=("That post loaded but no comments were readable%s. It may "
+                  "have none, comments may be limited, or the layout changed."
+                  % note_extra),
+            manual_url=post_url)
     return _result(True, collected[:limit],
                    "Read %d comment(s) across %d page(s)%s"
                    % (len(collected[:limit]), pages, note_extra))

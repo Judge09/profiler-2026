@@ -281,8 +281,9 @@
         </div>
 
         <div id="urlFields" class="mt-2" style="display:none">
-          <label class="form-label">Feed or page URL</label>
+          <label class="form-label" id="urlLabel">Feed or page URL</label>
           <input class="form-control form-control-sm" id="c-url" placeholder="https://example.com/feed">
+          <div class="form-text" id="urlHint" style="display:none"></div>
           <div class="form-text">
             Suggested:
             {% for f in suggested %}<a href="#" class="sugg" data-url="{{ f.url }}">{{ f.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
@@ -295,10 +296,12 @@
           <input class="form-control form-control-sm" id="c-page"
                  placeholder="NAMFREL — or paste the Page URL">
           <div class="form-text">
-            Naming a Page reads its posts directly through Facebook's
-            no-JavaScript interface: whole text, permalinks, timestamps and
-            reaction counts. Without one, only what the news index holds is
-            available.
+            Naming a Page reads its posts directly: whole text, permalinks,
+            timestamps and reaction counts. Without one, only what the news
+            index holds is available.
+            <b>Facebook now refuses logged-out requests</b>, so reading a Page
+            or its comments needs a session in the
+            <a href="/monitor/vault" target="_blank" rel="noopener">vault</a>.
           </div>
           <label class="mt-2" style="font-size:12px">
             <input type="checkbox" id="c-comments"> Also read the comments under

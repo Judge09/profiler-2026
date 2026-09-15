@@ -872,31 +872,44 @@ def _cred(platform, key):
     return None
 
 
-def _vault_session(platform):
+def _vault_session(platform, explain=False):
     """An authenticated `requests.Session` for a platform, or None.
 
-    Facebook collection works anonymously on some Pages and reliably on many
-    more with a session, so this is an optional upgrade rather than a
-    requirement: `None` means "carry on unauthenticated".
+    With `explain`, returns `(session, reason)` where `reason` says why there
+    is no session. That matters for Facebook, which now refuses every
+    logged-out request: "no session" is the whole explanation for an empty
+    result, and the analyst cannot act on it unless they are told which of the
+    three reasons applies -- vault locked, no credential stored, or a stored
+    credential holding no cookies.
     """
+    session, reason = None, ""
     try:
         from . import authfetch, vault
         from ..models import MonitorCredential
         if not vault.is_unlocked():
-            return None
-        rows = MonitorCredential.query.filter_by(platform=platform,
-                                                 enabled=True).all()
-        for c in rows:
-            secret = vault.decrypt(c.secret_blob) or {}
-            cookies = secret.get("cookies") or []
-            if cookies:
-                return authfetch._session_for(
-                    cookies, "https://mbasic.%s.com" % platform)
+            reason = ("the credential vault is locked -- unlock it on the "
+                      "Vault page")
+        else:
+            rows = MonitorCredential.query.filter_by(platform=platform,
+                                                     enabled=True).all()
+            if not rows:
+                reason = ("no %s session is stored -- add one on the Vault page"
+                          % platform)
+            else:
+                for c in rows:
+                    secret = vault.decrypt(c.secret_blob) or {}
+                    cookies = secret.get("cookies") or []
+                    if cookies:
+                        session = authfetch._session_for(
+                            cookies, "https://mbasic.%s.com" % platform)
+                        break
+                if session is None:
+                    reason = ("the stored %s credential holds no cookies"
+                              % platform)
     except Exception:
-        # A vault problem must never take a collection run down; the
-        # unauthenticated path still works.
-        return None
-    return None
+        # A vault problem must never take a collection run down.
+        reason = "the vault could not be read"
+    return (session, reason) if explain else session
 
 
 def fetch_praw(query, limit=MAX_PER_SOURCE, since=None, subreddit=None):
@@ -1615,14 +1628,17 @@ def fetch_facebook(query, limit=MAX_PER_SOURCE, since=None, page=None,
     #    it is tried first and upgraded with a vault session when one exists.
     if page:
         from . import facebook as fb
-        result = fb.collect_page(page, limit=limit,
-                                 session=_vault_session("facebook"),
+        session, why = _vault_session("facebook", explain=True)
+        result = fb.collect_page(page, limit=limit, session=session,
                                  since=since, with_comments=with_comments,
                                  comment_limit=comment_limit,
                                  budget=budget)
         if result["ok"]:
             posts.extend(result["posts"])
-        notes.append(result["note"])
+        note = result["note"]
+        if not result["ok"] and session is None and why:
+            note = "%s Right now, %s." % (note, why)
+        notes.append(note)
 
     # Comments are attached to the posts above, not a separate quota. Counting
     # them against `limit` would make "25 posts with comments" return five
@@ -1665,16 +1681,41 @@ def fetch_fb_comments(query, limit=MAX_PER_SOURCE, since=None, url=None,
     """
     target = url or (query if str(query or "").startswith("http") else "")
     if not target:
-        return _result(False, note="Paste the URL of the Facebook post whose "
-                                   "comments you want to read.")
+        return _result(
+            False,
+            note=("This source reads one post's comment thread, so it needs "
+                  "that post's URL. Paste it into the URL field above -- for "
+                  "example https://www.facebook.com/PageName/posts/123456."),
+            manual_url="https://www.facebook.com/")
+
     from . import facebook as fb
-    result = fb.collect_comments(target, limit=limit,
-                                 session=_vault_session("facebook"),
+    session, why = _vault_session("facebook", explain=True)
+    result = fb.collect_comments(target, limit=limit, session=session,
                                  max_pages=max_pages)
+
+    # Facebook refuses every logged-out request now, so when there is no
+    # session that is almost certainly the whole story. The generic advice
+    # ("add a session") already comes back from the fetcher; what it cannot
+    # know is which of the three reasons there is no session, so only that is
+    # added here.
+    if not result["ok"] and session is None and why:
+        result["note"] = "%s Right now, %s." % (result["note"], why)
+        result["blocked"] = True
+
     if result["ok"] and since:
         kept = fb._apply_since(result["posts"], since)
+        dropped = len(result["posts"]) - len(kept)
         result["posts"] = kept
-        result["note"] = "%d comment(s) within the date window" % len(kept)
+        if kept:
+            result["note"] = ("Read %d comment(s) within the date window"
+                              % len(kept))
+        else:
+            # Everything read fell outside the window. That is not a successful
+            # collection of nothing -- it is a filter the analyst should widen.
+            result["ok"] = False
+            result["note"] = ("Read %d comment(s), but all of them fall "
+                              "outside the date window. Widen it to keep them."
+                              % dropped)
     return result
 
 

@@ -1518,6 +1518,32 @@
     // collector, so they stay out of the way until it is selected.
     const fb = $('#fbFields');
     if (fb) fb.style.display = chosen.includes('facebook') ? '' : 'none';
+
+    // "Feed or page URL" is the wrong prompt for the comments collector, which
+    // wants one post's permalink. Asking for the wrong thing is most of why a
+    // run comes back empty.
+    const label = $('#urlLabel');
+    const hint = $('#urlHint');
+    const input = $('#c-url');
+    const wantsComments = chosen.includes('fb_comments');
+    if (label) {
+      label.textContent = wantsComments
+        ? 'Facebook post URL' : 'Feed or page URL';
+    }
+    if (input) {
+      input.placeholder = wantsComments
+        ? 'https://www.facebook.com/PageName/posts/1234567890'
+        : 'https://example.com/feed';
+    }
+    if (hint) {
+      hint.style.display = wantsComments ? '' : 'none';
+      hint.innerHTML = wantsComments
+        ? 'Paste the permalink of one post — open it on Facebook and copy the ' +
+          'address bar. Facebook refuses logged-out requests, so this needs a ' +
+          'session in the <a href="/monitor/vault" target="_blank" ' +
+          'rel="noopener">vault</a>.'
+        : '';
+    }
   }
 
   const cComments = $('#c-comments');

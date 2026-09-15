@@ -102,10 +102,15 @@ public web page.
 
 ### Facebook
 
-Facebook has no public search API, but it still serves **mbasic.facebook.com**
-— the no-JavaScript interface built for feature phones. That is the only
-Facebook surface that renders whole posts, permalinks, timestamps and comment
-threads as plain server-side HTML, so it is what the collector reads.
+**A session in the vault is now required.** Facebook answers HTTP 400 to every
+logged-out request — Pages, permalinks and comment threads alike. It no longer
+serves public content anonymously at all, so without a stored session this
+source returns nothing and says so.
+
+To set one up: **Monitor → Vault**, unlock it, and paste the cookies from a
+browser you are logged into. Collection then reads `mbasic.facebook.com`, the
+no-JavaScript interface, which is the only Facebook surface that renders whole
+posts, permalinks, timestamps and comment threads as plain server-side HTML.
 
 **Name a Page** in the collection panel (`NAMFREL`, or paste its URL) and you
 get, per post:
@@ -116,26 +121,38 @@ get, per post:
 - the timestamp, including relative forms like `2 hrs` and `Yesterday`
 - reaction, comment and share counts
 
-Without a Page name there is nothing to read directly, so the collector falls
-back to the search index and the dork links below.
-
 What to expect, measured rather than assumed:
 
-| Target | Without a session | With a vault session |
+| Target | Logged out | With a vault session |
 |---|---|---|
-| Public Page timeline | often, but Facebook A/B-tests a login wall | reliably |
-| A single public post | when the post itself is public | reliably |
-| Comments on a public post | usually | reliably |
+| Public Page timeline | **no** — HTTP 400 | yes |
+| A single public post | **no** — HTTP 400 | yes, when the post is public |
+| Comments on a public post | **no** — HTTP 400 | yes |
 | Groups, private pages, profiles | no | only what that account can see |
-| Search | no — mbasic search is login-walled | no |
+| Search | no | no — mbasic search is login-walled |
 
-When a login wall is served, the run says so plainly rather than returning
-nothing and looking like "no posts found".
+Without a Page name there is nothing to fetch directly, so the collector falls
+back to the search index and the dork links, which still work logged out.
+
+Sessions do not last. Cookies expire in days, and a scripted session on a
+throwaway account is often challenged sooner. When that happens the run says
+the session was rejected rather than reporting an empty result — re-paste fresh
+cookies.
 
 ### Comments
 
-Tick **"Also read the comments under each post"**, or select the
-**Facebook comments** source and paste one post URL.
+Two ways in:
+
+- **Facebook Page** source, with *"Also read the comments under each post"*
+  ticked — reads the Page's recent posts and every thread under them.
+- **Facebook comments** source, with one post's permalink in the URL field.
+  Open the post on Facebook and copy the address bar; a Page URL will not do,
+  it has to point at a single post.
+
+Both need a vault session, for the reason above. If a run comes back empty,
+read the note beside the source in the collection report: it distinguishes
+"refused, no session" from "no comments on that post" from "everything fell
+outside your date window", which are three quite different problems.
 
 Comments matter because they are usually where a coordinated push is most
 visible: the post is bland and deniable while the replies carry the scam link,
@@ -158,6 +175,16 @@ On a serverless host the comment sweep runs under a wall-clock budget (about
 60% of `COLLECT_TIMEOUT`). When it runs out, the run returns what it gathered
 and says how many threads went unread, rather than losing everything to a
 gateway timeout. Collect again to continue, or raise `COLLECT_TIMEOUT`.
+
+**When nothing comes back**, the note says which of these it was:
+
+| Note | What it means |
+|---|---|
+| *Facebook refused the request (HTTP 400)…* | No usable session. Add or refresh one in the vault. |
+| *…the stored session was rejected* | The cookies expired or the account hit a checkpoint. Re-paste them. |
+| *That post loaded but no comments were readable* | Genuinely none, comments are limited, or the layout changed. |
+| *…all of them fall outside the date window* | They were read and then filtered out. Widen the window. |
+| *Facebook says that post does not exist* | Deleted, or the URL points at a private post. |
 
 ### X (Twitter)
 
