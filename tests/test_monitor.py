@@ -8,6 +8,7 @@ to run anywhere. The network-dependent pieces (collectors, phishing feeds,
 geolocation) are exercised separately in test_live.py, which is opt-in.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -300,6 +301,143 @@ class GraphTests(unittest.TestCase):
         merged, stats = graphbuild.merge("not json at all",
                                          {"nodes": [], "edges": []})
         self.assertEqual(merged["nodes"], [])
+
+
+class ProfileIdentityTests(unittest.TestCase):
+    """A profile keeps its identity on the map, whatever it is called.
+
+    Matching on the label alone meant renaming a profile -- or adding it from
+    a route that labelled it differently -- silently drew a second node, and
+    the map then double-counted one person.
+    """
+
+    def merge(self, base, add):
+        return graphbuild.merge(json.dumps(base), add)
+
+    def test_a_renamed_profile_merges_into_the_existing_node(self):
+        base = {"nodes": [{"id": 1, "label": "FALCON-1", "type": "person",
+                           "profile_id": 7}], "edges": []}
+        add = {"nodes": [{"id": 1, "label": "RAVEN-9", "type": "person",
+                          "profile_id": 7}], "edges": []}
+        merged, stats = self.merge(base, add)
+        self.assertEqual(stats["nodes_added"], 0)
+        self.assertEqual(len(merged["nodes"]), 1)
+
+    def test_two_profiles_sharing_a_codename_stay_separate(self):
+        # Conflating two people is far worse than one node too many.
+        base = {"nodes": [{"id": 1, "label": "FALCON-1", "type": "person",
+                           "profile_id": 7}], "edges": []}
+        add = {"nodes": [{"id": 1, "label": "FALCON-1", "type": "person",
+                          "profile_id": 99}], "edges": []}
+        merged, stats = self.merge(base, add)
+        self.assertEqual(stats["nodes_added"], 1)
+        self.assertEqual(sorted(n["profile_id"] for n in merged["nodes"]),
+                         [7, 99])
+
+    def test_an_account_matches_on_handle_not_display_name(self):
+        base = {"nodes": [{"id": 1, "label": "@scammer", "type": "username",
+                           "handle": "scammer", "platform": "Facebook"}],
+                "edges": []}
+        add = {"nodes": [{"id": 1, "label": "Totally Legit Page",
+                          "type": "username", "handle": "scammer",
+                          "platform": "Facebook"}], "edges": []}
+        _, stats = self.merge(base, add)
+        self.assertEqual(stats["nodes_added"], 0)
+
+    def test_different_accounts_sharing_a_display_name_stay_separate(self):
+        base = {"nodes": [{"id": 1, "label": "News", "type": "username",
+                           "handle": "a", "platform": "X"}], "edges": []}
+        add = {"nodes": [{"id": 1, "label": "News", "type": "username",
+                          "handle": "b", "platform": "X"}], "edges": []}
+        _, stats = self.merge(base, add)
+        self.assertEqual(stats["nodes_added"], 1)
+
+    def test_a_hand_drawn_node_adopts_the_profile_it_turns_out_to_be(self):
+        # Nodes drawn by hand have no id; when the same person arrives from a
+        # profile, the existing node should gain the link rather than be
+        # duplicated beside it.
+        base = {"nodes": [{"id": 1, "label": "FALCON-1", "type": "person"}],
+                "edges": []}
+        add = {"nodes": [{"id": 1, "label": "FALCON-1", "type": "person",
+                          "profile_id": 7, "real_name": "Juan Dela Cruz"}],
+               "edges": []}
+        merged, stats = self.merge(base, add)
+        self.assertEqual(stats["nodes_added"], 0)
+        self.assertEqual(merged["nodes"][0]["profile_id"], 7)
+        self.assertEqual(merged["nodes"][0]["real_name"], "Juan Dela Cruz")
+
+    def test_label_matching_still_works_without_identities(self):
+        base = {"nodes": [{"id": 1, "label": "Some Org",
+                           "type": "organization"}], "edges": []}
+        add = {"nodes": [{"id": 1, "label": "some org",
+                          "type": "organization"}], "edges": []}
+        _, stats = self.merge(base, add)
+        self.assertEqual(stats["nodes_added"], 0)
+
+    def test_the_richer_copy_fills_gaps_in_the_existing_node(self):
+        # A profile added from a watch knows only a codename; the same profile
+        # added from its own page knows the real name and threat score.
+        base = {"nodes": [{"id": 1, "label": "FALCON-1", "type": "person",
+                           "profile_id": 7}], "edges": []}
+        add = {"nodes": [{"id": 1, "label": "FALCON-1", "type": "person",
+                          "profile_id": 7, "real_name": "Juan Dela Cruz",
+                          "threat": 8}], "edges": []}
+        merged, _ = self.merge(base, add)
+        self.assertEqual(merged["nodes"][0]["real_name"], "Juan Dela Cruz")
+        self.assertEqual(merged["nodes"][0]["threat"], 8)
+
+
+class ProfileNamingTests(unittest.TestCase):
+    """What a profile node is called, and what it says on hover."""
+
+    RECORD = {
+        "id": 7, "codename": "FALCON-1", "real_name": "Juan Dela Cruz",
+        "known_aliases": ["JDC", "Juancho"], "occupation": "Organiser",
+        "nationality": "Filipino",
+        "radar": {"labels": ["Academics", "Physical", "Social", "Influence",
+                             "Threat", "Digital"],
+                  "scores": [0, 0, 0, 0, 8, 0]},
+    }
+
+    def test_the_tooltip_carries_the_identity_the_label_does_not(self):
+        title = graphbuild.profile_title(self.RECORD, "FALCON-1")
+        self.assertIn("FALCON-1", title)
+        self.assertIn("Juan Dela Cruz", title)
+        self.assertIn("JDC", title)
+        self.assertIn("Organiser", title)
+        self.assertIn("Threat 8/10", title)
+
+    def test_a_bare_profile_still_produces_a_sensible_tooltip(self):
+        title = graphbuild.profile_title({"codename": "GHOST-2"}, "GHOST-2")
+        self.assertEqual(title, "GHOST-2")
+
+    def test_a_real_name_matching_the_codename_is_not_repeated(self):
+        title = graphbuild.profile_title(
+            {"codename": "Jane Roe", "real_name": "Jane Roe"}, "Jane Roe")
+        self.assertEqual(title.count("Jane Roe"), 1)
+
+    def test_aliases_stored_as_json_text_are_still_read(self):
+        record = dict(self.RECORD, known_aliases=json.dumps(["JDC"]))
+        self.assertIn("JDC", graphbuild.profile_title(record, "FALCON-1"))
+
+    def test_node_fields_carry_the_identity_for_later_merges(self):
+        fields = graphbuild.profile_fields(self.RECORD)
+        self.assertEqual(fields["real_name"], "Juan Dela Cruz")
+        self.assertEqual(fields["threat"], 8)
+
+    def test_a_profile_drawn_from_a_post_gets_the_same_detail(self):
+        posts = [{"id": 1, "platform": "Facebook", "author": "someone",
+                  "handle": "someone", "text": "a post", "url": "",
+                  "score": 80, "verdict": "bad", "types": ["Scam"],
+                  "profile_id": 7, "profile_codename": "FALCON-1"}]
+        graph, _ = graphbuild.build_from_records(
+            {"subject": "ACME", "name": "T"}, posts, min_score=30,
+            profiles=[self.RECORD])
+        person = [n for n in graph["nodes"] if n["type"] == "person"]
+        self.assertEqual(len(person), 1)
+        self.assertEqual(person[0]["label"], "FALCON-1")
+        self.assertIn("Juan Dela Cruz", person[0]["title"])
+        self.assertEqual(person[0]["profile_id"], 7)
 
 
 class AppTests(unittest.TestCase):

@@ -109,13 +109,24 @@
   function enrichNode(n) {
     const type = n.type || 'person';
     const def = NODE_TYPES[type] || NODE_TYPES.person;
+    // A node built from scored posts carries its own colour: red, amber or
+    // green by verdict, and red for a domain on a risky TLD. Overriding it
+    // with the type colour threw that away, so a map of forty accounts looked
+    // uniform and said nothing about which of them mattered.
+    //
+    // `color` becomes an object after one pass, and the graph is saved and
+    // re-enriched on every load, so the original value is kept in `baseColor`
+    // -- otherwise the verdict colour would survive exactly one round-trip.
+    const base = n.baseColor
+      || ((typeof n.color === 'string' && n.color) ? n.color : def.color);
     return {
       ...n,
+      baseColor: base,
       color: {
-        background: def.color + '33',
-        border: def.color,
-        highlight: { background: def.color + '55', border: '#fff' },
-        hover: { background: def.color + '44', border: def.color },
+        background: base + '33',
+        border: base,
+        highlight: { background: base + '55', border: '#fff' },
+        hover: { background: base + '44', border: base },
       },
       font: { color: '#d0d8ef', size: 13 },
       title: n.title || n.label,
@@ -236,11 +247,51 @@
         <label class="form-label">Details / Tooltip</label>
         <input type="text" id="propDetail" class="form-control" value="${escHtml(node.title || '')}">
       </div>
+      ${identityBlock(node)}
       <div class="d-flex gap-2">
         <button class="btn btn-primary btn-sm" onclick="applyNodeProps(${id})">Apply</button>
         <button class="btn btn-danger btn-sm" onclick="deleteNode(${id})">Delete</button>
       </div>
     `;
+  }
+
+  /* What this node is tied to, when it is tied to anything.
+   *
+   * A node carrying a `profile_id` is a tracked person, not just a label on a
+   * canvas -- so say who, and link back to them. Without this the connection
+   * existed in the data and nowhere in the interface, which made the map feel
+   * like a drawing rather than a view onto the case. */
+  function identityBlock(node) {
+    const bits = [];
+
+    if (node.profile_id) {
+      bits.push(
+        '<div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">' +
+        '<i class="fa fa-id-card me-1"></i>Tracked profile' +
+        (node.real_name ? ' — ' + escHtml(node.real_name) : '') +
+        (node.threat !== undefined && node.threat !== null
+          ? ' · threat ' + escHtml(node.threat) + '/10' : '') +
+        '</div>' +
+        '<a class="btn btn-outline btn-sm w-100 mb-3" target="_blank" ' +
+        'rel="noopener" href="/profiles/' + encodeURIComponent(node.profile_id) +
+        '"><i class="fa fa-arrow-up-right-from-square me-1"></i>Open profile</a>');
+    } else if (node.handle) {
+      bits.push(
+        '<div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">' +
+        '<i class="fa fa-at me-1"></i>' + escHtml(node.handle) +
+        (node.platform ? ' on ' + escHtml(node.platform) : '') +
+        (node.score !== undefined && node.score !== null
+          ? ' · risk ' + escHtml(node.score) + '/100' : '') +
+        '</div>');
+    }
+
+    if (node.url) {
+      bits.push(
+        '<a class="btn btn-ghost btn-sm w-100 mb-3" target="_blank" ' +
+        'rel="noopener" href="' + escHtml(node.url) + '">' +
+        '<i class="fa fa-link me-1"></i>Open source</a>');
+    }
+    return bits.join('');
   }
 
   function showEdgeProps(id) {
@@ -276,10 +327,22 @@
     const type   = document.getElementById('propType')?.value;
     const detail = document.getElementById('propDetail')?.value.trim();
     if (!label) return;
-    const updated = enrichNode({ id, label, type, title: detail || label, ...nodesDS.get(id) });
-    updated.label = label;
-    updated.type = type;
-    updated.title = detail || label;
+    // Start from the stored node so everything the canvas does not show --
+    // `profile_id`, `handle`, `real_name`, `threat`, `url` -- survives an
+    // edit. Renaming a node must never sever it from the profile it stands
+    // for; that is exactly what would make the same person appear twice on a
+    // later merge.
+    const current = nodesDS.get(id);
+    const updated = Object.assign({}, current, {
+      id, label, type, title: detail || label,
+    });
+    // Changing the type is a request to recolour, so the remembered colour is
+    // dropped -- unless it came from a verdict, which is about risk rather
+    // than type and should outlive the change.
+    if (current && current.type !== type && !current.verdict) {
+      delete updated.baseColor;
+      delete updated.color;
+    }
     nodesDS.update(enrichNode(updated));
   };
 

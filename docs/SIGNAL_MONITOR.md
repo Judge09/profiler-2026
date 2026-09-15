@@ -405,6 +405,51 @@ you commit, so nobody adds four hundred nodes by accident.
 A selection you ticked by hand is added **whole** — no verdict or score filter
 is applied on top of it, since you already chose those posts.
 
+### How a profile is named
+
+A profile node is labelled with its **codename** — short enough to read on a
+crowded canvas, and it keeps real names out of an exported PNG. Everything that
+actually identifies the person is in the tooltip:
+
+```
+FALCON-1 - Juan Dela Cruz - aka JDC, Juancho - Organiser - Filipino - Threat 8/10
+```
+
+Selecting the node shows the same detail in the properties panel, with an
+**Open profile** button back to the profile itself. A profile drawn from a
+scored post gets the same treatment as one added from its own page, so it does
+not matter which route put it there.
+
+### Identity, not just labels
+
+Nodes carry a stable identity: a profile keeps its **profile id**, an account
+keeps its **handle**. Merging matches on that first and falls back to the label
+only for hand-drawn nodes, which have nothing else.
+
+This matters in four ways you would otherwise hit:
+
+- **Renaming a profile no longer duplicates it.** Under label matching,
+  FALCON-1 becoming RAVEN-9 drew a second node and the map quietly
+  double-counted one person.
+- **Two profiles sharing a codename stay separate.** Conflating two people is a
+  worse error than one node too many, so an explicit identity always wins over
+  a matching label.
+- **An account matches on its handle**, not its display name — which is the
+  thing a scam page changes most often.
+- **A hand-drawn node adopts the profile it turns out to be**, gaining the link
+  rather than being duplicated beside it.
+
+When the same entity arrives twice, the richer copy fills the gaps in the
+existing node: a profile added from a watch knows only a codename, while the
+same profile added from its own page knows the real name and threat score.
+
+### Risk colouring survives
+
+Nodes built from scored posts are coloured by verdict — red, amber, green — and
+domains on risky TLDs are red. The editor preserves that through saves and
+reloads instead of recolouring everything by type, so a map of forty accounts
+still says which of them matter.
+
 ### Comments on the map
 
 Commenters attach to the account whose thread they replied to, not to the

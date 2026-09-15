@@ -96,25 +96,78 @@
     });
   }
 
+  /* The Threat axis from a profile's radar, or null.
+   *
+   * It is the number an analyst looks at first, and it was previously lost
+   * entirely when a profile reached the map. */
+  function threatScore(profile) {
+    const radar = profile.radar || {};
+    const labels = radar.labels || [];
+    const scores = radar.scores || [];
+    const i = labels.findIndex((l) => String(l).trim().toLowerCase() === 'threat');
+    if (i < 0 || i >= scores.length) return null;
+    const n = Number(scores[i]);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /* Hover text for a profile node.
+   *
+   * Mirrors `graphbuild.profile_title` on the server, so a profile looks the
+   * same whether it arrived from its own page or from a scored post. */
+  function profileTitle(profile) {
+    const codename = profile.codename || 'Profile';
+    const parts = [codename];
+
+    const real = String(profile.real_name || '').trim();
+    if (real && real.toLowerCase() !== codename.toLowerCase()) parts.push(real);
+
+    const aliases = (profile.known_aliases || [])
+      .map((a) => String(a).trim()).filter(Boolean).slice(0, 4);
+    if (aliases.length) parts.push('aka ' + aliases.join(', '));
+
+    ['occupation', 'nationality'].forEach((f) => {
+      const v = String(profile[f] || '').trim();
+      if (v) parts.push(v);
+    });
+
+    const threat = threatScore(profile);
+    if (threat !== null) parts.push('Threat ' + threat + '/10');
+
+    return parts.join(' - ');
+  }
+
   /* A profile's own small graph: the person and the accounts attached to them.
    * Merged into an existing map, this is how a profile joins a picture built
    * from posts — the codename node matches the one the post graph already drew
    * for a linked profile, so the two halves join at that node. */
   function profileGraph(profile, opts) {
     const nodes = [{
-      id: 1, label: profile.codename, type: 'person',
-      title: profile.real_name || 'Tracked profile',
+      id: 1,
+      // The label stays the codename: short enough to read on a crowded
+      // canvas, and it keeps real names out of an exported PNG. Everything
+      // that actually identifies the person is in the tooltip instead.
+      label: profile.codename || 'Profile',
+      type: 'person',
+      title: profileTitle(profile),
       profile_id: profile.id,
+      real_name: profile.real_name || '',
+      threat: threatScore(profile),
     }];
     const edges = [];
     let nid = 2;
 
     (profile.social_links || []).forEach((l) => {
-      const label = l.username || l.url;
+      const handle = String(l.username || '').trim().replace(/^@/, '');
+      const label = handle || l.url;
       if (!label) return;
       nodes.push({
         id: nid, label: String(label), type: 'username',
-        title: l.platform || 'Account',
+        title: [l.platform || 'Account', handle ? '@' + handle : '',
+                l.url || ''].filter(Boolean).join(' - '),
+        // Carried so a merge matches this account by who it is rather than by
+        // how it happens to be written.
+        handle: handle,
+        platform: l.platform || '',
       });
       edges.push({ from: 1, to: nid, label: 'linked account',
                    title: l.platform || '' });

@@ -172,6 +172,9 @@ def build_from_records(watch, posts, min_score=30, include_domains=True,
     subject_norm = str(subject_label).strip().lower()
 
     known = {pr.get("id"): pr.get("codename") for pr in (profiles or [])}
+    # The full records, so a profile drawn from a post carries the same detail
+    # as one added from its own page rather than just a codename.
+    records = {pr.get("id"): pr for pr in (profiles or []) if pr.get("id")}
 
     for raw in posts:
         p = _record(raw)
@@ -253,18 +256,26 @@ def build_from_records(watch, posts, min_score=30, include_domains=True,
         # -- correlated profiles -----------------------------------------
         if include_profiles:
             if p["profile_id"]:
+                record = records.get(p["profile_id"]) or {}
                 codename = (p["profile_codename"] or known.get(p["profile_id"])
                             or ("profile %s" % p["profile_id"]))
                 pkey = "prof:%s" % p["profile_id"]
-                pnode = g.node(pkey, codename, TYPE_PERSON, "Linked profile",
-                               profile_id=p["profile_id"])
+                pnode = g.node(pkey, codename, TYPE_PERSON,
+                               profile_title(record, codename,
+                                             "Analyst-confirmed link"),
+                               profile_id=p["profile_id"],
+                               **profile_fields(record))
                 g.edge(anode, pnode, "linked to", "Analyst-confirmed link")
             for m in p["matches"][:2]:
+                record = records.get(m["profile_id"]) or {}
                 pkey = "prof:%s" % m["profile_id"]
                 pnode = g.node(pkey, m["codename"], TYPE_PERSON,
-                               "Suggested match - %d%% via %s"
-                               % (round(m["confidence"] * 100), m["via"]),
-                               profile_id=m["profile_id"])
+                               profile_title(
+                                   record, m["codename"],
+                                   "Suggested match - %d%% via %s"
+                                   % (round(m["confidence"] * 100), m["via"])),
+                               profile_id=m["profile_id"],
+                               **profile_fields(record))
                 g.edge(anode, pnode, "possible match",
                        '%s "%s"' % (m["kind"], m["matched"]),
                        dashes=True)
@@ -283,12 +294,100 @@ def verdict_label(v):
     return {"bad": "high risk", "warn": "needs review", "ok": "clear"}.get(v, v)
 
 
+def profile_title(record, codename, context=""):
+    """The hover text for a profile node.
+
+    The label stays the codename -- short, and the convention the rest of the
+    app works in -- so everything that actually identifies the person lives
+    here instead: the real name, what they are known as elsewhere, and the
+    threat score, which is the number an analyst looks at first.
+    """
+    lines = [codename or "Profile"]
+    real = (record.get("real_name") or "").strip()
+    if real and real.lower() != (codename or "").lower():
+        lines.append(real)
+
+    aliases = record.get("known_aliases") or []
+    if isinstance(aliases, str):          # older records stored a JSON string
+        try:
+            aliases = json.loads(aliases)
+        except (ValueError, TypeError):
+            aliases = []
+    aliases = [str(a).strip() for a in aliases if str(a).strip()][:4]
+    if aliases:
+        lines.append("aka " + ", ".join(aliases))
+
+    for field, label in (("occupation", ""), ("nationality", "")):
+        value = (record.get(field) or "").strip()
+        if value:
+            lines.append(label + value if label else value)
+
+    threat = _threat_score(record)
+    if threat is not None:
+        lines.append("Threat %g/10" % threat)
+
+    if context:
+        lines.append(context)
+    return " - ".join(lines)
+
+
+def _threat_score(record):
+    """The Threat axis from a profile's radar, when it has one."""
+    radar = record.get("radar") or {}
+    labels = radar.get("labels") or []
+    scores = radar.get("scores") or []
+    for i, name in enumerate(labels):
+        if str(name).strip().lower() == "threat" and i < len(scores):
+            try:
+                return float(scores[i])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def profile_fields(record):
+    """Extra node fields worth carrying onto the map.
+
+    These travel with the node so the editor's properties panel and any later
+    merge can use them; they are not drawn on the canvas.
+    """
+    out = {}
+    real = (record.get("real_name") or "").strip()
+    if real:
+        out["real_name"] = real
+    threat = _threat_score(record)
+    if threat is not None:
+        out["threat"] = threat
+    return out
+
+
+def identity_of(node):
+    """The stable key for a node, when it has one.
+
+    A tracked profile carries `profile_id`, which identifies it no matter what
+    it is currently called. Matching on the label alone means renaming a
+    profile -- or adding it from a route that labels it differently -- silently
+    creates a second node, and the map then double-counts one person.
+
+    Accounts get the same treatment via `platform:handle`, for the same reason:
+    a display name changes, an account handle does not.
+    """
+    if node.get("profile_id") not in (None, ""):
+        return ("profile", str(node["profile_id"]))
+    handle = str(node.get("handle") or "").strip().lstrip("@").lower()
+    if handle:
+        return ("account", str(node.get("platform") or "").lower(), handle)
+    return None
+
+
 def merge(existing_json, addition):
     """Merge a new graph into an existing one without duplicating nodes.
 
-    Nodes are matched on label plus type, which is what a human would call
-    "the same entity". Ids in the addition are remapped onto the existing
-    graph's numbering so nothing collides.
+    Nodes are matched on their stable identity where they have one (a profile
+    id, or a platform handle), and otherwise on label plus type -- which is
+    what a human would call "the same entity", and all a hand-drawn node has.
+    Ids in the addition are remapped onto the existing graph's numbering so
+    nothing collides.
     """
     try:
         base = json.loads(existing_json or '{"nodes":[],"edges":[]}')
@@ -299,18 +398,49 @@ def merge(existing_json, addition):
 
     index = {(str(n.get("label", "")).lower(), n.get("type")): n.get("id")
              for n in base["nodes"]}
+    ident = {}
+    for n in base["nodes"]:
+        key = identity_of(n)
+        if key:
+            ident[key] = n.get("id")
+    by_id = {n.get("id"): n for n in base["nodes"]}
     next_id = max([int(n.get("id", 0)) for n in base["nodes"]] or [0]) + 1
 
     remap = {}
     added_nodes = 0
     for n in addition.get("nodes", []):
-        key = (str(n.get("label", "")).lower(), n.get("type"))
-        if key in index:
-            remap[n["id"]] = index[key]
+        stable = identity_of(n)
+        target = ident.get(stable) if stable else None
+        if target is None:
+            candidate = index.get((str(n.get("label", "")).lower(), n.get("type")))
+            # Fall back to the label only when it cannot contradict an identity.
+            # Two different profiles may share a codename, and merging them
+            # because of that would conflate two people on the map -- a far
+            # worse error than drawing one node too many.
+            if candidate is not None:
+                other = identity_of(by_id.get(candidate) or {})
+                if not (stable and other and stable != other):
+                    target = candidate
+        if target is not None:
+            remap[n["id"]] = target
+            # The incoming copy may know things the existing node does not --
+            # a profile added from a watch has only a codename, while the same
+            # profile added from its own page carries the real name and
+            # aliases. Fill the gaps rather than discarding them.
+            existing = by_id.get(target)
+            if existing:
+                for field, value in n.items():
+                    if field in ("id", "label", "type"):
+                        continue
+                    if value not in (None, "", [], {}) and not existing.get(field):
+                        existing[field] = value
             continue
         new = dict(n, id=next_id)
         remap[n["id"]] = next_id
-        index[key] = next_id
+        index[(str(n.get("label", "")).lower(), n.get("type"))] = next_id
+        if stable:
+            ident[stable] = next_id
+        by_id[next_id] = new
         next_id += 1
         base["nodes"].append(new)
         added_nodes += 1
