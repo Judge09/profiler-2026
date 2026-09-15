@@ -32,7 +32,30 @@ from .keywords import rules_hash as keywords_rules_hash
 monitor = Blueprint("monitor", __name__, url_prefix="/monitor")
 
 STATUSES = ("new", "reviewed", "escalated", "dismissed")
-SORTS = ("risk", "recent", "oldest", "platform", "status", "relevance")
+# Sort keys name a field only; `dir` carries the direction, so each works both
+# ways. "recent"/"oldest" are the older fused keys and are still accepted from
+# saved links and presets.
+SORTS = ("risk", "posted", "collected", "engagement", "author", "platform",
+         "status", "relevance")
+
+# Engagement is stored as JSON, so that sort is done in Python over the matched
+# rows. This caps how many are pulled in to do it -- past this the sort would
+# cost more memory than the ordering is worth.
+ENGAGEMENT_SORT_CAP = 5000
+
+
+def _engagement_total(post):
+    """Reactions + comments + shares, 0 when a source reports none."""
+    data = post.engagement if hasattr(post, "engagement") else {}
+    if not isinstance(data, dict):
+        return 0
+    total = 0
+    for key in ("reactions", "comments", "shares"):
+        try:
+            total += int(data.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 # -- Helpers -----------------------------------------------------------------
@@ -54,18 +77,58 @@ def _analyze_watch(watch, force=False):
 
 
 def _parse_since(value, default_days=None):
-    """Turn a `days` or ISO date parameter into a naive UTC datetime."""
-    if value in (None, "", "all"):
+    """Turn a window or ISO date parameter into a naive UTC datetime.
+
+    Accepts the same forms the toolbar offers: hours ("1h", "12h"), days ("7",
+    or "7d") and an explicit ISO timestamp. Hours matter because "what landed
+    in the last hour" is the most common question during a live incident, and
+    a day-only filter cannot express it.
+    """
+    if value in (None, "", "all", "custom"):
         return (datetime.utcnow() - timedelta(days=default_days)
                 if default_days else None)
-    try:
-        return datetime.utcnow() - timedelta(days=max(1, min(3650, int(value))))
-    except (TypeError, ValueError):
-        pass
+
+    raw = str(value).strip().lower()
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*([hd]?)$", raw)
+    if m:
+        try:
+            n = float(m.group(1))
+        except ValueError:
+            n = 0
+        if n > 0:
+            if m.group(2) == "h":
+                return datetime.utcnow() - timedelta(hours=min(n, 87600))
+            return datetime.utcnow() - timedelta(days=min(n, 3650))
+        return None
+
     try:
         return datetime.fromisoformat(str(value)[:19])
     except ValueError:
         return None
+
+
+def _parse_bound(value, end_of_minute=False):
+    """One end of a custom range, as a naive datetime, or None.
+
+    Bounds are interpreted as UTC, matching `posted_ts` and `collected_at`,
+    which are stored naive-UTC. The browser's own list does its range filtering
+    in IndexedDB and never reaches here; this path serves direct API callers,
+    who send UTC like every other timestamp in the API.
+
+    A bound given to the minute means that whole minute, so an upper bound is
+    pushed to :59 -- otherwise a range ending 22:30 drops a post published at
+    22:30:45, which reads as the filter losing posts.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(raw[:19])
+    except ValueError:
+        return None
+    if end_of_minute and len(raw) <= 16:  # no seconds component was supplied
+        stamp = stamp.replace(second=59, microsecond=999999)
+    return stamp
 
 
 def _add_posts(watch, raw_posts, source="manual", drop_off_topic=False,
@@ -123,6 +186,10 @@ def _add_posts(watch, raw_posts, source="manual", drop_off_topic=False,
             source=raw.get("source") or source,
             source_url=str(raw.get("source_url") or "")[:500],
             link_kind=raw.get("link_kind") or "direct",
+            kind=raw.get("kind") or "post",
+            parent_url=str(raw.get("parent_url") or "")[:500],
+            parent_author=str(raw.get("parent_author") or "")[:200],
+            engagement_json=json.dumps(raw.get("engagement") or {}),
             posted_at=stamp,
             posted_ts=posted_ts or datetime.utcnow(),
             dedupe_key=key,
@@ -746,9 +813,27 @@ def results(watch_id):
     if threat:
         q = q.filter(MonitorPost.cached_types.ilike("%" + threat + "%"))
 
-    since = _parse_since(request.args.get("days"))
-    if since:
-        q = q.filter(MonitorPost.posted_ts >= since)
+    # The time window: a preset ("12h", "7") or an explicit range. `date_field`
+    # chooses whether it applies to when a post was published or when it was
+    # collected -- the latter is what you want straight after a sweep.
+    date_col = (MonitorPost.collected_at
+                if (request.args.get("date_field") or "") == "collected"
+                else MonitorPost.posted_ts)
+
+    days = (request.args.get("days") or "").strip()
+    if days == "custom":
+        lower = _parse_bound(request.args.get("from"))
+        upper = _parse_bound(request.args.get("to"), end_of_minute=True)
+        if lower and upper and lower > upper:
+            lower, upper = upper, lower
+        if lower:
+            q = q.filter(date_col >= lower)
+        if upper:
+            q = q.filter(date_col <= upper)
+    else:
+        since = _parse_since(days)
+        if since:
+            q = q.filter(date_col >= since)
 
     term = (request.args.get("q") or "").strip()
     if term:
@@ -760,21 +845,66 @@ def results(watch_id):
                             MonitorPost.cached_types.ilike(like)))
 
     sort = (request.args.get("sort") or "risk").strip()
+    # `recent`/`oldest` were a sort and a direction fused together, before the
+    # direction toggle existed. Old links and presets still send them.
+    legacy = {"recent": ("posted", "desc"), "oldest": ("posted", "asc")}
+    direction = (request.args.get("dir") or "").strip().lower()
+    if sort in legacy:
+        sort, implied = legacy[sort]
+        if direction not in ("asc", "desc"):
+            direction = implied
     if sort not in SORTS:
         sort = "risk"
+    if direction not in ("asc", "desc"):
+        direction = "desc"
+
+    def _dir(col):
+        """Order a column in the requested direction.
+
+        `desc` means literally descending -- highest score, newest date, Z to A
+        -- so the toggle does the same visible thing to every sort rather than
+        meaning something different per column.
+        """
+        return (col.desc().nullslast() if direction == "desc"
+                else col.asc().nullsfirst())
+
+    # Name-like columns read A-Z by default, so their natural direction is the
+    # opposite of a score's. The UI accounts for this when it picks the default
+    # direction for a newly chosen sort.
     order = {
-        "risk": (score_col.desc(),),
-        "recent": (MonitorPost.posted_ts.desc().nullslast(),),
-        "oldest": (MonitorPost.posted_ts.asc().nullsfirst(),),
-        "platform": (MonitorPost.platform.asc(), score_col.desc()),
-        "status": (MonitorPost.status.asc(), score_col.desc()),
-        "relevance": (MonitorPost.cached_relevant.desc(), score_col.desc()),
+        "risk": (_dir(score_col),),
+        "posted": (_dir(MonitorPost.posted_ts),),
+        "collected": (_dir(MonitorPost.collected_at),),
+        "platform": (_dir(MonitorPost.platform), score_col.desc()),
+        "status": (_dir(MonitorPost.status), score_col.desc()),
+        "relevance": (_dir(MonitorPost.cached_relevant), score_col.desc()),
+        # Group repeat actors together. `handle` is the stabler identity, but
+        # it is often empty, so fall back to the display name.
+        "author": (_dir(db.func.lower(db.func.coalesce(
+            db.func.nullif(MonitorPost.handle, ""), MonitorPost.author))),
+            score_col.desc()),
+        # Engagement lives in a JSON blob, which no portable SQL can order by.
+        # Rather than quietly returning an unsorted page, the rows are ordered
+        # by risk here and re-sorted in Python below, once they are objects.
+        "engagement": (score_col.desc(),),
     }[sort]
     # Pinned posts stay on top wherever the analyst is looking.
     q = q.order_by(MonitorPost.pinned.desc(), *order, MonitorPost.id.desc())
 
     total_matching = q.count()
-    rows = q.limit(per_page).offset((page - 1) * per_page).all()
+    if sort == "engagement":
+        # Ordering by a JSON field is not portable SQL, so the sort happens
+        # here. It must run over the whole result set before paging, or page 2
+        # would be "the second 25 by risk, re-sorted" rather than the second 25
+        # by engagement. Bounded so a huge watch cannot exhaust memory.
+        candidates = q.limit(ENGAGEMENT_SORT_CAP).all()
+        flip = -1 if direction == "desc" else 1
+        # Pinned first either way, then engagement in the chosen direction.
+        candidates.sort(key=lambda p: (not p.pinned,
+                                       flip * _engagement_total(p)))
+        rows = candidates[(page - 1) * per_page:page * per_page]
+    else:
+        rows = q.limit(per_page).offset((page - 1) * per_page).all()
 
     cfg = _watch_config(w)
     digest = rules_hash(w, cfg.get("spec"))
@@ -2200,6 +2330,13 @@ def api_collect():
             "manual_verdict": None,
             "analyst_note": "",
             "profile_id": None,
+            # Comments travel as posts with a parent. Keeping the relationship
+            # is what lets the link map draw a reply under the post it answers
+            # rather than as another loose account.
+            "kind": raw.get("kind") or "post",
+            "parent_url": str(raw.get("parent_url") or "")[:500],
+            "parent_author": str(raw.get("parent_author") or "")[:200],
+            "engagement": raw.get("engagement") or {},
         }
 
         a = engine.analyze(post, cfg)
@@ -2282,20 +2419,48 @@ def api_graph():
            "existing": "<graph_json>"}
     """
     data = request.json or {}
+    # An explicit null means "no verdict filter" -- a hand-picked selection has
+    # already been chosen by the analyst, and filtering it again would silently
+    # drop posts they just selected. A missing key keeps the old default.
+    if "verdicts" in data and data.get("verdicts") is None:
+        verdicts = ()
+    else:
+        verdicts = tuple(data.get("verdicts") or ("bad", "warn"))
+
     payload, stats = graphbuild.build_from_records(
         data.get("watch") or {},
         data.get("posts") or [],
-        min_score=int(data.get("min_score") or 30),
+        min_score=int(data.get("min_score") or 0),
         include_domains=data.get("domains", True),
         include_profiles=data.get("profiles", True),
         include_geo=bool(data.get("geo")),
-        verdicts=tuple(data.get("verdicts") or ("bad", "warn")),
+        verdicts=verdicts,
         profiles=data.get("profile_records") or [],
     )
     merged_stats = None
     if data.get("existing"):
         payload, merged_stats = graphbuild.merge(data["existing"], payload)
     return jsonify({"graph": payload, "stats": stats, "merged": merged_stats})
+
+
+@monitor.route("/api/graph/merge", methods=["POST"])
+@login_required
+def api_graph_merge():
+    """Merge a ready-made graph into an existing one.
+
+    The post-driven graph goes through /api/graph, but a profile's small graph
+    is assembled in the browser and only needs merging. Keeping the merge here
+    means one implementation decides what counts as the same entity, rather
+    than a second, subtly different one growing in JavaScript.
+
+    Body: {"existing": "<graph_json>", "addition": {"nodes": [], "edges": []}}
+    """
+    data = request.json or {}
+    addition = data.get("addition") or {}
+    if not isinstance(addition, dict):
+        return jsonify({"error": "addition must be a graph object"}), 400
+    payload, merged = graphbuild.merge(data.get("existing"), addition)
+    return jsonify({"graph": payload, "merged": merged})
 
 
 @monitor.route("/api/network", methods=["POST"])
@@ -2537,6 +2702,10 @@ def api_sync_push():
             link_kind=p.get("link_kind") or "direct",
             posted_at=p.get("posted_at"), posted_ts=posted_ts,
             dedupe_key=p.get("dedupe_key"),
+            kind=p.get("kind") or "post",
+            parent_url=(p.get("parent_url") or "")[:500],
+            parent_author=(p.get("parent_author") or "")[:200],
+            engagement_json=json.dumps(p.get("engagement") or {}),
             status=p.get("status") or "new",
             pinned=bool(p.get("pinned")),
             manual_score=p.get("manual_score"),
@@ -2586,6 +2755,10 @@ def api_sync_pull():
             "author": p.author, "handle": p.handle, "verified": p.verified,
             "text": p.text, "url": p.url, "source": p.source,
             "source_url": p.source_url, "link_kind": p.link_kind,
+            "kind": p.kind or "post",
+            "parent_url": p.parent_url or "",
+            "parent_author": p.parent_author or "",
+            "engagement": p.engagement,
             "posted_at": p.posted_at,
             "posted_ts": p.posted_ts.isoformat() if p.posted_ts else "",
             "collected_at": p.collected_at.isoformat() if p.collected_at else "",

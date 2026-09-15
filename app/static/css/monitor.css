@@ -89,6 +89,9 @@
 .mon-tag.status-escalated { border-color: var(--red); color: var(--red); }
 .mon-tag.status-reviewed { border-color: var(--green); color: var(--green); }
 .mon-tag.status-dismissed { opacity: .5; }
+/* A reply, marked so it is never mistaken for a post of its own. */
+.mon-tag.comment-tag { border-color: #7a5cff; color: #b3a1ff; margin-left: 6px;
+  white-space: nowrap; display: inline-block; vertical-align: middle; }
 .mon-linkbtn { margin-left: auto; background: none; border: 0; color: var(--accent); font-weight: 600; font-size: 12px; cursor: pointer; padding: 4px 2px; }
 .mon-linkbtn:hover { color: #fff; }
 
@@ -266,6 +269,18 @@
 .mon-filter-count { font-size: 11px; font-family: var(--font-mono); color: var(--accent); background: var(--accent-dim); border: 1px solid rgba(0,229,255,.35); border-radius: 9px; padding: 1px 7px; white-space: nowrap; }
 
 /* Active-filter chips: what is currently narrowing the list, each removable. */
+/* Custom date range, shown under the toolbar when "Custom range" is picked.
+   It wraps on narrow screens rather than forcing the toolbar to scroll. */
+.mon-range { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg-deep); }
+.mon-range label { font-size: 11px; color: var(--text-dim); margin: 0; }
+.mon-range input[type="datetime-local"] { width: auto; min-width: 190px;
+  color-scheme: dark; }
+.mon-range-note { font-size: 11px; color: var(--text-faint); }
+/* The sort-direction arrow sits next to the sort menu and must not stretch. */
+#sortDirBtn { flex: 0 0 auto; padding-left: 9px; padding-right: 9px; }
+
 .mon-fchips { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 6px; }
 .mon-fchip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(0,229,255,.35); background: var(--accent-dim); color: var(--accent); border-radius: 11px; font-size: 11px; padding: 2px 8px; cursor: pointer; max-width: 240px; }
 .mon-fchip i { font-size: 10px; opacity: .75; }

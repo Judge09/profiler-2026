@@ -6,3 +6,10 @@ tests/
 *.db
 *.db-shm
 *.db-wal
+
+# Command-line collectors. They run on a machine with a scheduler, never
+# inside the serverless function, so they only add weight to the bundle.
+scripts/
+watches/
+out/
+docs/

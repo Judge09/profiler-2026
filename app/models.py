@@ -327,6 +327,14 @@ class MonitorPost(db.Model):
     source = db.Column(db.Text, default="manual")
     source_url = db.Column(db.Text, default="")
     link_kind = db.Column(db.Text, default="direct")  # direct / search
+
+    # Comments are stored as posts with a parent, so they inherit the whole
+    # triage, filtering, export and link-map pipeline instead of duplicating
+    # it. `kind` is "post" or "comment"; the parent columns are empty on posts.
+    kind = db.Column(db.Text, default="post", index=True)
+    parent_url = db.Column(db.Text, default="")
+    parent_author = db.Column(db.Text, default="")
+    engagement_json = db.Column(db.Text, default="{}")
     posted_at = db.Column(db.Text)
     collected_at = db.Column(db.DateTime, default=datetime.utcnow)
     dedupe_key = db.Column(db.Text, index=True)
@@ -353,6 +361,17 @@ class MonitorPost(db.Model):
 
     linked_profile = db.relationship("Profile", foreign_keys=[profile_id], lazy=True)
 
+    @property
+    def engagement(self):
+        try:
+            return json.loads(self.engagement_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @engagement.setter
+    def engagement(self, value):
+        self.engagement_json = json.dumps(value if isinstance(value, dict) else {})
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -366,6 +385,10 @@ class MonitorPost(db.Model):
             "source": self.source,
             "source_url": self.source_url,
             "link_kind": self.link_kind or "direct",
+            "kind": self.kind or "post",
+            "parent_url": self.parent_url or "",
+            "parent_author": self.parent_author or "",
+            "engagement": self.engagement,
             "posted_at": self.posted_at,
             "collected_at": self.collected_at.strftime("%Y-%m-%d %H:%M") if self.collected_at else "",
             "profile_id": self.profile_id,

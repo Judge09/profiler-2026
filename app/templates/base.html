@@ -104,6 +104,10 @@
 <script src="{{ url_for('static', filename='js/store.js') }}"></script>
 <script src="{{ url_for('static', filename='js/datalayer.js') }}"></script>
 
+<!-- "Add to link map", shared by the watch, post and profile views so that all
+     three reach the same dialog and the same merge behaviour. -->
+<script src="{{ url_for('static', filename='js/linkmap_integrate.js') }}"></script>
+
 {% block scripts %}{% endblock %}
 
 <!-- Toast container -->

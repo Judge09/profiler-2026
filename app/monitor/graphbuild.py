@@ -106,6 +106,9 @@ def _record(p):
             "profile_id": p.get("profile_id"),
             "profile_codename": p.get("profile_codename"),
             "matches": analysis.get("profile_matches") or [],
+            "kind": p.get("kind") or "post",
+            "parent_url": p.get("parent_url") or "",
+            "parent_author": p.get("parent_author") or "",
         }
     analysis = scoring.analysis_of(p) or {}
     score = p.manual_score if p.manual_score is not None else (
@@ -126,6 +129,9 @@ def _record(p):
         "profile_codename": (p.linked_profile.codename
                              if p.linked_profile else None),
         "matches": analysis.get("profile_matches") or [],
+        "kind": getattr(p, "kind", "") or "post",
+        "parent_url": getattr(p, "parent_url", "") or "",
+        "parent_author": getattr(p, "parent_author", "") or "",
     }
 
 
@@ -153,11 +159,17 @@ def build_from_records(watch, posts, min_score=30, include_domains=True,
     get = (watch.get if isinstance(watch, dict)
            else (lambda k, d=None: getattr(watch, k, d)))
     g = GraphBuilder()
-    stats = {"posts": 0, "accounts": 0, "domains": 0, "profiles": 0,
-             "locations": 0, "skipped": 0}
+    stats = {"posts": 0, "comments": 0, "accounts": 0, "domains": 0,
+             "profiles": 0, "locations": 0, "skipped": 0}
 
-    root = g.node("subject", get("subject") or get("name") or "Subject", TYPE_ORG,
+    subject_label = get("subject") or get("name") or "Subject"
+    root = g.node("subject", subject_label, TYPE_ORG,
                   "Watch subject - %s" % (get("name") or ""))
+    # The thread being commented on is very often the subject's own page -- you
+    # watch NAMFREL and read NAMFREL's posts. Drawn as a separate node it
+    # becomes two "NAMFREL" circles with the commenters hanging off the wrong
+    # one, so the name is remembered here and reused as the root instead.
+    subject_norm = str(subject_label).strip().lower()
 
     known = {pr.get("id"): pr.get("codename") for pr in (profiles or [])}
 
@@ -168,6 +180,8 @@ def build_from_records(watch, posts, min_score=30, include_domains=True,
             stats["skipped"] += 1
             continue
         stats["posts"] += 1
+        if p.get("kind") == "comment":
+            stats["comments"] += 1
         types = p["types"]
 
         # -- the account -------------------------------------------------
@@ -175,16 +189,40 @@ def build_from_records(watch, posts, min_score=30, include_domains=True,
         akey = "acct:%s:%s" % (p["platform"].lower(),
                                (handle or p["author"]).lower())
         label = ("@" + handle) if handle else (p["author"] or "unknown")
+        is_comment = p.get("kind") == "comment"
         anode = g.node(
             akey, label, TYPE_ACCOUNT,
-            "%s - risk %d/100 - %s" % (p["platform"] or "?", score,
-                                       ", ".join(types) or "no threat type"),
+            "%s - risk %d/100 - %s%s" % (
+                p["platform"] or "?", score,
+                ", ".join(types) or "no threat type",
+                " (commenter)" if is_comment else ""),
             color=VERDICT_COLOR.get(verdict),
             score=score, verdict=verdict, platform=p["platform"],
-            post_id=p["id"], url=p["url"])
-        g.edge(root, anode, verdict_label(verdict),
-               ", ".join(types) or "mentions the subject",
-               color=VERDICT_COLOR.get(verdict))
+            post_id=p["id"], url=p["url"], kind=p.get("kind") or "post")
+
+        # A commenter is attached to the account it replied to, not straight to
+        # the subject. That is the whole point of collecting comments: a dozen
+        # fresh accounts converging on one post is a pattern, and it is only
+        # visible when they all draw edges into that same post's author.
+        if is_comment and p.get("parent_author"):
+            author_norm = p["parent_author"].strip().lower()
+            if author_norm and author_norm == subject_norm:
+                # The thread is the subject's own; commenters attach straight
+                # to it rather than to a duplicate of it.
+                parent = root
+            else:
+                pkey = "acct:%s:%s" % (p["platform"].lower(), author_norm)
+                parent = g.node(pkey, p["parent_author"][:60], TYPE_ACCOUNT,
+                                "Posted the thread these comments reply to",
+                                url=p.get("parent_url") or "")
+                g.edge(root, parent, "thread", "carries the collected comments")
+            g.edge(anode, parent, "commented on",
+                   ", ".join(types) or "replied in the thread",
+                   dashes=True, color=VERDICT_COLOR.get(verdict))
+        else:
+            g.edge(root, anode, verdict_label(verdict),
+                   ", ".join(types) or "mentions the subject",
+                   color=VERDICT_COLOR.get(verdict))
 
         # -- domains it pushes -------------------------------------------
         if include_domains:

@@ -224,32 +224,14 @@
     window.location = '/profiles/';
   });
 
-  // Build (or reuse) a link map seeded with this profile.
+  // Put this profile on a link map -- a new one, or the map already being
+  // built. The shared dialog handles the merge, so a profile can join a
+  // picture assembled from posts instead of living on a map of its own.
   $('#btnLinkmap').addEventListener('click', async (e) => {
     e.preventDefault();
-    const graphs = await Store.all('graphs');
-    let g = graphs.find((x) => x.profile_id === ID);
-    if (!g) {
-      const nodes = [{ id: 1, label: profile.codename, type: 'person',
-                       title: profile.real_name || '' }];
-      let nid = 2;
-      (profile.social_links || []).forEach((l) => {
-        if (!l.username && !l.url) return;
-        nodes.push({ id: nid, label: l.username || l.url, type: 'username',
-                     title: l.platform || '' });
-        nid += 1;
-      });
-      const edges = nodes.slice(1).map((n) => ({ from: 1, to: n.id,
-                                                 label: 'linked account' }));
-      const id = await Store.put('graphs', {
-        title: profile.codename + ' — Link Map', profile_id: ID,
-        graph_json: JSON.stringify({ nodes, edges }),
-        created_at: new Date().toISOString().slice(0, 19),
-        updated_at: new Date().toISOString().slice(0, 19),
-      });
-      g = { id };
-    }
-    window.location = '/linkmap/edit?id=' + g.id;
+    try {
+      await LinkMapAdd.openAndShow({ kind: 'profile', profile });
+    } catch (err) { showToast(err.message, 'danger'); }
   });
 
   window.addEventListener('pagehide', () => {

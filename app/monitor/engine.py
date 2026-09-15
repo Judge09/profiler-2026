@@ -137,6 +137,26 @@ THREAT_RULES = [
     (re.compile(r"\bthreat(en(ing|ed)?)?\b", re.I), "threat language"),
     (re.compile(r"\b(revenge|payback|get even)\b", re.I), "revenge framing"),
     (re.compile(r"\b(watch (your|his|her) back|you'?re dead)\b", re.I), "intimidation"),
+    # Veiled threats, which is the form most of them actually take in a
+    # comment thread. A literal "I will kill you" is rare and gets deleted;
+    # "we know where you live" and "they will pay for this" are what a
+    # brigading campaign posts, and the rules above matched none of them.
+    # "we know where X lives/works" -- the words between are the target, so the
+    # gap is bounded rather than requiring a pronoun immediately after.
+    (re.compile(r"\bwe know (where|who)\b[^.!?\n]{0,40}\b"
+                r"(lives?|live|works?|stays?|studies|sleeps?|is|are)\b", re.I),
+     "veiled location threat"),
+    (re.compile(r"\b(you|he|she|they|we)('| wi)?ll (pay|regret|suffer)\b", re.I),
+     "retribution framing"),
+    # "watch out" and "mag-ingat" aimed at a person. Ordinary safety advice
+    # ("be careful about fake advisories") points at a thing, not someone, so
+    # the target must be a person pronoun rather than any following word --
+    # otherwise every warning about a scam scores as a threat.
+    (re.compile(r"\b(watch out|mag-?ingat)\b[^.!?\n]{0,20}\b"
+                r"(you|him|her|them|kayo|siya|sila)\b", re.I), "warning framing"),
+    (re.compile(r"\b(hunt|hunting) (him|her|them|you) down\b", re.I), "pursuit framing"),
+    (re.compile(r"\b(papatayin|papatay|patayin|bugbugin|gaganti)\b", re.I),
+     "violence (Filipino)"),
 ]
 
 # Default weights. A watch may override any of these by key.
@@ -527,6 +547,15 @@ def analyze(post, cfg):
     kw_hits = kw_eval["required_hits"] + kw_eval["optional_hits"]
     off_topic_reason = "" if relevant else kw_eval["reason"]
 
+    # A comment inherits its parent post's relevance. Replies rarely restate
+    # the topic -- "this is fake, don't share" names nothing the keyword rules
+    # look for -- so judging one on its own words would discard exactly the
+    # replies worth reading. The parent was already matched to get here, and an
+    # excluded term still wins, because that is an explicit "never this".
+    if not relevant and get("kind") == "comment" and not kw_eval.get("excluded_hits"):
+        relevant = True
+        off_topic_reason = ""
+
     # Identity: impersonation (release mode)
     if cfg["mode_release"]:
         if official:
@@ -660,7 +689,9 @@ def analyze(post, cfg):
             (str(bangs) + " exclamation marks") if bangs >= 2 else "Mostly capital letters",
             W["sensational"])
 
-    # Hunter: targeting language
+    # Hunter: exposure of someone's personal details. This stays mode-gated
+    # because "address" and "expose" are ordinary words in reporting, and the
+    # rules only make sense when a watch is actually hunting for targeting.
     if cfg["mode_hunter"]:
         doxx = [(rx, lbl) for rx, lbl in DOXX_RULES if rx.search(text)]
         if doxx:
@@ -669,13 +700,19 @@ def analyze(post, cfg):
             add("Personal-information exposure", ", ".join(lbl for _, lbl in doxx),
                 min(len(doxx) * W["doxx_each"], W["doxx_cap"]))
             types.add("Doxxing")
-        threat = [(rx, lbl) for rx, lbl in THREAT_RULES if rx.search(text)]
-        if threat:
-            for rx, _ in threat:
-                _collect_words(text, rx, flag_words)
-            add("Threatening language", ", ".join(lbl for _, lbl in threat),
-                min(len(threat) * W["threat_each"], W["threat_cap"]))
-            types.add("Threat")
+
+    # Threats are evaluated in every mode. A comment saying "we know where they
+    # live" is worth surfacing whether or not someone remembered to switch
+    # Hunter on -- it was previously invisible in a standard watch, which is the
+    # kind of miss that matters most. The rules are written narrowly enough
+    # that ordinary reporting does not trip them.
+    threat = [(rx, lbl) for rx, lbl in THREAT_RULES if rx.search(text)]
+    if threat:
+        for rx, _ in threat:
+            _collect_words(text, rx, flag_words)
+        add("Threatening language", ", ".join(lbl for _, lbl in threat),
+            min(len(threat) * W["threat_each"], W["threat_cap"]))
+        types.add("Threat")
 
     # Analyst's own flag list
     custom_hits = []

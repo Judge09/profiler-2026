@@ -36,7 +36,22 @@
      export all agree on the same vocabulary. Anything not in DEFAULTS is not
      a filter and is never persisted. */
 
-  const SORTS = ['risk', 'recent', 'oldest', 'relevance', 'platform', 'status'];
+  // Sort keys name a field only; direction is separate, so every one of these
+  // works both ways. `recent` and `oldest` are the old fused sort+direction
+  // keys, kept so saved presets and shared links from before the toggle keep
+  // working -- normalizeQuery rewrites them into a key plus a direction.
+  const SORTS = ['risk', 'posted', 'collected', 'engagement', 'author',
+                 'relevance', 'platform', 'status'];
+  const LEGACY_SORTS = { recent: ['posted', 'desc'], oldest: ['posted', 'asc'] };
+  // The direction each sort gets when it is first chosen. Scores and dates
+  // read highest/newest first; names read A-Z.
+  const NATURAL_DIR = {
+    risk: 'desc', posted: 'desc', collected: 'desc', engagement: 'desc',
+    relevance: 'desc', author: 'asc', platform: 'asc', status: 'asc',
+  };
+  // Preset time windows the date menu offers. Hours carry an 'h'; bare numbers
+  // are days. 'custom' hands over to the From/To inputs.
+  const DAY_CHOICES = ['1h', '3h', '6h', '12h', '1', '3', '7', '30', '90'];
   const DEFAULT_PER_PAGE = window.MONITOR.pageSize || 25;
   // The configured PAGE_SIZE is accepted even when it is not one of the menu
   // choices, so a deployment that sets its own default is not normalised away.
@@ -45,12 +60,23 @@
   const FILTER_DEFAULTS = {
     verdict: 'all',
     status: '',
+    // '' is both, 'post' or 'comment' narrows to one. Listing it here is what
+    // carries it through the URL, saved presets and Reset with no extra code.
+    kind: '',
     platform: '',
     days: '',
+    // An explicit window, used when `days` is 'custom'. Both ends are
+    // optional: one alone is an open-ended range.
+    from: '',
+    to: '',
+    // Which timestamp the window applies to: '' is the post's own date,
+    // 'collected' is when this browser collected it.
+    date_field: '',
     q: '',
     types: '',
     pinned: false,
     sort: 'risk',
+    dir: 'desc',
     per_page: DEFAULT_PER_PAGE,
   };
   // Page is positional, not a filter: it is retained in the URL so a reload
@@ -62,6 +88,40 @@
     return Object.assign({ page: 1 }, FILTER_DEFAULTS);
   }
 
+  /* Normalise a `datetime-local` value, or '' when it is not one.
+   *
+   * These are local wall-clock strings with no zone ('2026-09-14T22:30'),
+   * which is what the analyst typed and what the store compares against. They
+   * are validated rather than trusted because they also arrive from the URL,
+   * where anything at all can be typed. Seconds are accepted (some browsers
+   * add them) and kept, so a range is not silently widened to the minute.
+   */
+  function localStamp(value) {
+    const raw = String(value == null ? '' : value).trim();
+    if (!raw) return '';
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(raw)) return '';
+    return Number.isNaN(Date.parse(raw)) ? '' : raw;
+  }
+
+  // "14 Sep 22:30" — a range bound in the chips and preset descriptions,
+  // where the full ISO string is noise.
+  function shortStamp(value) {
+    const t = Date.parse(value || '');
+    if (Number.isNaN(t)) return String(value || '');
+    const d = new Date(t);
+    return d.toLocaleString(undefined, {
+      day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    });
+  }
+
+  // How the date menu's options read, for chips and preset descriptions.
+  function windowLabel(v) {
+    const m = String(v || '').match(/^(\d+)h$/);
+    if (m) return m[1] === '1' ? 'Last hour' : 'Last ' + m[1] + ' hours';
+    if (v === '1') return 'Last 24 hours';
+    return 'Last ' + v + ' days';
+  }
+
   // Coerce anything (URL string, stored JSON, preset) into a valid query.
   // Unknown keys and out-of-range values are dropped rather than trusted.
   function normalizeQuery(raw) {
@@ -69,12 +129,40 @@
     const out = defaultQuery();
     if (['all', 'bad', 'warn', 'ok'].includes(o.verdict)) out.verdict = o.verdict;
     if (STATUSES.includes(o.status)) out.status = o.status;
+    if (['post', 'comment'].includes(o.kind)) out.kind = o.kind;
     if (o.platform) out.platform = String(o.platform);
-    if (['1', '7', '30', '90'].includes(String(o.days))) out.days = String(o.days);
+    if (DAY_CHOICES.includes(String(o.days))) out.days = String(o.days);
+    if (String(o.days) === 'custom') out.days = 'custom';
+    if (o.date_field === 'collected') out.date_field = 'collected';
+
+    // A custom range is only meaningful with at least one bound, and only
+    // while 'custom' is selected -- otherwise a stale range left in a URL
+    // would keep narrowing a preset window invisibly.
+    if (out.days === 'custom') {
+      out.from = localStamp(o.from);
+      out.to = localStamp(o.to);
+      // Reversed bounds are a slip, not an empty result: swap them rather
+      // than showing nothing and leaving the analyst to work out why.
+      if (out.from && out.to && out.from > out.to) {
+        const swap = out.from; out.from = out.to; out.to = swap;
+      }
+      // 'custom' with no bounds yet is a legitimate state -- it is what
+      // picking "Custom range…" means before anything has been typed, and it
+      // is what keeps the From/To row on screen. It filters nothing until a
+      // bound is set, which `activeFilters` reflects by not listing it.
+    }
+
     if (o.q) out.q = String(o.q).slice(0, 200);
     if (o.types) out.types = String(o.types).slice(0, 80);
     out.pinned = o.pinned === true || o.pinned === 'true' || o.pinned === '1';
-    if (SORTS.includes(o.sort)) out.sort = o.sort;
+
+    if (SORTS.includes(o.sort)) {
+      out.sort = o.sort;
+      if (o.dir === 'asc' || o.dir === 'desc') out.dir = o.dir;
+    } else if (LEGACY_SORTS[o.sort]) {
+      // An old link or preset: unpack the fused key into key + direction.
+      [out.sort, out.dir] = LEGACY_SORTS[o.sort];
+    }
     const pp = parseInt(o.per_page, 10);
     if (PER_PAGE_CHOICES.includes(pp)) out.per_page = pp;
     const pg = parseInt(o.page, 10);
@@ -89,14 +177,22 @@
     FILTER_KEYS.forEach((k) => {
       if (q[k] !== FILTER_DEFAULTS[k] && q[k] !== '' && q[k] !== false) out[k] = q[k];
     });
+    // "Custom range" with neither end set narrows nothing yet -- it is just
+    // the row being open. Listing it would put an empty chip on screen and
+    // make the filter badge claim a filter that is not filtering.
+    if (out.days === 'custom' && !out.from && !out.to) delete out.days;
     return out;
   }
 
+  // Sort, direction and page size shape the view; they narrow nothing, so the
+  // "N filters" badge must ignore them or it never reads zero. `date_field`
+  // likewise only says which timestamp the window means -- the window itself
+  // is `days`/`from`/`to`, which do count.
+  const VIEW_KEYS = ['sort', 'dir', 'per_page', 'date_field'];
+
   function filterCount(q) {
-    // Sort and page size are view preferences, not narrowing filters, so they
-    // are not counted as "active" -- otherwise the badge never reads zero.
     return Object.keys(activeFilters(q)).filter(
-      (k) => k !== 'sort' && k !== 'per_page').length;
+      (k) => !VIEW_KEYS.includes(k)).length;
   }
 
   function queryFromUrl() {
@@ -386,6 +482,10 @@
     state.selected.clear();
     syncUrl();
     persistFilters();
+    // Some controls reflect state rather than only setting it -- the range row
+    // opens and closes with the window, and the direction arrow has to point
+    // the way the list now runs. Without this they only updated on a reload.
+    syncControls();
     refresh();
   }
 
@@ -393,15 +493,62 @@
   // preset, so the toolbar never disagrees with the results below it.
   function syncControls() {
     const q = state.query;
-    const set = (id, v) => { const el = $('#' + id); if (el) el.value = v; };
+    // Never write back into the control the analyst is currently using. The
+    // search box is debounced, so overwriting a focused field would drop
+    // whatever was typed between the keystroke and the query landing.
+    const set = (id, v) => {
+      const el = $('#' + id);
+      if (el && el !== document.activeElement) el.value = v;
+    };
     set('q', q.q);
     set('statusSel', q.status);
+    set('kindSel', q.kind);
     set('platformSel', q.platform);
     set('daysSel', q.days);
+    set('dateFieldSel', q.date_field);
     set('sortSel', q.sort);
     set('perPageSel', String(q.per_page));
     const pin = $('#pinnedOnly');
     if (pin) pin.checked = q.pinned;
+    syncSortDir();
+    syncRangeRow();
+  }
+
+  // The direction button carries its own state, and the icon has to say which
+  // way the list currently runs -- an arrow that never changes is worse than
+  // no arrow at all.
+  function syncSortDir() {
+    const btn = $('#sortDirBtn');
+    if (!btn) return;
+    const asc = state.query.dir === 'asc';
+    btn.dataset.dir = asc ? 'asc' : 'desc';
+    btn.innerHTML = '<i class="fa ' +
+      (asc ? 'fa-arrow-up-short-wide' : 'fa-arrow-down-wide-short') + '"></i>';
+    const opt = $('#sortSel') &&
+      $('#sortSel').querySelector('option[value="' + state.query.sort + '"]');
+    const name = opt ? opt.textContent.toLowerCase() : state.query.sort;
+    btn.title = asc
+      ? 'Lowest ' + name + ' first — click for highest first'
+      : 'Highest ' + name + ' first — click for lowest first';
+  }
+
+  // The range inputs only exist while "Custom range…" is the chosen window.
+  function syncRangeRow() {
+    const row = $('#rangeRow');
+    if (!row) return;
+    const on = state.query.days === 'custom';
+    row.style.display = on ? '' : 'none';
+    if (!on) return;
+    const from = $('#rangeFrom');
+    const to = $('#rangeTo');
+    if (from) from.value = state.query.from || '';
+    if (to) to.value = state.query.to || '';
+    const note = $('#rangeNote');
+    if (note) {
+      note.textContent = (!state.query.from && !state.query.to)
+        ? 'Set either end, or both.'
+        : '';
+    }
   }
 
   /* ── Rendering ────────────────────────────────────────────────────────── */
@@ -529,8 +676,13 @@
   // "3 h ago" reads faster than a timestamp when triaging a long list.
   function ago(iso) {
     if (!iso) return '';
-    const t = Date.parse(iso.length <= 10 ? iso + 'T00:00:00' : iso);
-    if (isNaN(t)) return iso;
+    // Stored stamps are UTC with the zone stripped, so they must be parsed as
+    // UTC. Reading them as local time made everything look hours older (or
+    // newer) than it was, by exactly the viewer's offset.
+    const t = iso.length <= 10
+      ? Date.parse(iso + 'T00:00:00Z')
+      : Store.parseStored(iso);
+    if (!t || isNaN(t)) return iso;
     const mins = Math.round((Date.now() - t) / 60000);
     if (mins < 1) return 'just now';
     if (mins < 60) return mins + ' min ago';
@@ -566,6 +718,14 @@
           '<div style="min-width:0">' +
             who +
             (p.verified ? ' <i class="fa fa-circle-check" style="color:var(--accent);font-size:11px" title="Verified on platform"></i>' : '') +
+            // A reply reads very differently from a post, so say which it is
+            // and under whose thread it sits.
+            (p.kind === 'comment'
+              ? ' <span class="mon-tag comment-tag" title="A reply' +
+                (p.parent_author ? ' under ' + esc(p.parent_author) + "'s post" : '') +
+                '"><i class="fa fa-reply"></i> comment' +
+                (p.parent_author ? ' · ' + esc(p.parent_author) : '') + '</span>'
+              : '') +
             '<span class="mon-meta">' + (p.handle ? '@' + esc(p.handle) + ' · ' : '') + esc(p.platform) +
             (when ? ' · ' + esc(when) : '') +
             (p.source && p.source !== 'manual' ? ' · via ' + esc(p.source) : '') + '</span>' +
@@ -657,10 +817,23 @@
     verdict: (v) => VERD[v].label,
     status: (v) => 'Status: ' + v,
     platform: (v) => v,
-    days: (v) => (v === '1' ? 'Last 24 h' : 'Last ' + v + ' days'),
+    // A custom range reads as one chip covering both ends: two chips that only
+    // make sense together are two chips you can break by removing one.
+    days: (v, f) => {
+      if (v !== 'custom') return windowLabel(v);
+      if (f.from && f.to) return shortStamp(f.from) + ' → ' + shortStamp(f.to);
+      if (f.from) return 'Since ' + shortStamp(f.from);
+      return 'Up to ' + shortStamp(f.to);
+    },
+    date_field: () => 'By collected date',
     types: (v) => 'Type: ' + v,
     pinned: () => 'Pinned only',
     q: (v) => '“' + v + '”',
+  };
+
+  // Removing a chip clears everything that chip stood for.
+  const CHIP_CLEARS = {
+    days: { days: '', from: '', to: '' },
   };
 
   function renderChipsForFilters() {
@@ -668,7 +841,7 @@
     return Object.keys(CHIP_LABELS)
       .filter((k) => k in f)
       .map((k) => '<button class="mon-fchip" data-drop-filter="' + k + '" ' +
-        'title="Remove this filter">' + esc(CHIP_LABELS[k](f[k])) +
+        'title="Remove this filter">' + esc(CHIP_LABELS[k](f[k], f)) +
         ' <i class="fa fa-xmark"></i></button>').join('');
   }
 
@@ -702,7 +875,9 @@
     if (!chip) return;
     const k = chip.dataset.dropFilter;
     if (k === '*') { resetFilters(); return; }
-    setFilter({ [k]: FILTER_DEFAULTS[k] });
+    // Some chips stand for more than one key (a custom range is days + both
+    // bounds); clearing only the named key would leave the rest applied.
+    setFilter(CHIP_CLEARS[k] || { [k]: FILTER_DEFAULTS[k] });
     syncControls();
   });
 
@@ -1023,6 +1198,30 @@
     if (!await confirmModal('Delete ' + state.selected.size + ' selected post(s)?', 'Delete')) return;
     bulk('delete');
   });
+  // Selected posts onto a map. The selection is the analyst's own choice, so
+  // it goes across whole -- no verdict or score filter is applied to it.
+  const bulkMap = $('#bulkLinkmap');
+  if (bulkMap) {
+    bulkMap.addEventListener('click', async () => {
+      const ids = new Set(state.selected);
+      if (!ids.size) { showToast('Select some posts first', 'warning'); return; }
+      try {
+        // Read the full rows from the store: `state.posts` holds only the
+        // page on screen, and a selection can span several pages.
+        const rows = [];
+        for (const id of ids) {
+          const row = await Store.get('posts', id);
+          if (row) rows.push(row);
+        }
+        if (!rows.length) {
+          showToast('Those posts are no longer in this browser', 'warning');
+          return;
+        }
+        await LinkMapAdd.openAndShow({ kind: 'posts', watch, posts: rows });
+      } catch (e) { showToast(e.message, 'danger'); }
+    });
+  }
+
   $('#bulkDeselect').addEventListener('click', () => { state.selected.clear(); render(); });
   const bulkPage = $('#bulkSelectPage');
   if (bulkPage) {
@@ -1039,10 +1238,63 @@
     if (b) setFilter({ verdict: b.dataset.filter });
   });
   $('#q').addEventListener('input', debounce((e) => setFilter({ q: e.target.value }), 300));
-  $('#sortSel').addEventListener('change', (e) => setFilter({ sort: e.target.value }));
+  // Choosing a sort resets its direction to the one that reads naturally for
+  // that field: worst-first for scores and newest-first for dates, but A-Z for
+  // names -- nobody picks "Author" wanting Z first. The toggle still overrides.
+  $('#sortSel').addEventListener('change', (e) => {
+    const sort = e.target.value;
+    setFilter({ sort, dir: NATURAL_DIR[sort] || 'desc' });
+  });
   $('#platformSel').addEventListener('change', (e) => setFilter({ platform: e.target.value }));
   $('#statusSel').addEventListener('change', (e) => setFilter({ status: e.target.value }));
-  $('#daysSel').addEventListener('change', (e) => setFilter({ days: e.target.value }));
+  const kindSel = $('#kindSel');
+  if (kindSel) kindSel.addEventListener('change', (e) => setFilter({ kind: e.target.value }));
+  // Switching to a preset window clears any range that was set, and away from
+  // 'custom' clears it too -- a range left behind would keep narrowing the
+  // preset with no visible sign of it.
+  $('#daysSel').addEventListener('change', (e) => {
+    const days = e.target.value;
+    if (days === 'custom') {
+      setFilter({ days, from: state.query.from, to: state.query.to });
+      const from = $('#rangeFrom');
+      if (from) from.focus();
+    } else {
+      setFilter({ days, from: '', to: '' });
+    }
+  });
+
+  const dateField = $('#dateFieldSel');
+  if (dateField) {
+    dateField.addEventListener('change', (e) =>
+      setFilter({ date_field: e.target.value }));
+  }
+
+  // Typing a date fires `change` on blur and on each spinner step; `input`
+  // would re-query on every keystroke of a half-typed year.
+  ['rangeFrom', 'rangeTo'].forEach((id) => {
+    const el = $('#' + id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      setFilter({
+        days: 'custom',
+        from: $('#rangeFrom') ? $('#rangeFrom').value : '',
+        to: $('#rangeTo') ? $('#rangeTo').value : '',
+      });
+    });
+  });
+
+  const rangeClear = $('#rangeClear');
+  if (rangeClear) {
+    rangeClear.addEventListener('click', () =>
+      setFilter({ days: '', from: '', to: '' }));
+  }
+
+  const sortDirBtn = $('#sortDirBtn');
+  if (sortDirBtn) {
+    sortDirBtn.addEventListener('click', () =>
+      setFilter({ dir: state.query.dir === 'asc' ? 'desc' : 'asc' }));
+  }
+
   $('#perPageSel').addEventListener('change', (e) =>
     setFilter({ per_page: parseInt(e.target.value, 10) || 25 }));
   $('#btnResetFilters').addEventListener('click', resetFilters);
@@ -1071,13 +1323,22 @@
     if (f.verdict && f.verdict !== 'all') bits.push(VERD[f.verdict].label);
     if (f.status) bits.push('status: ' + f.status);
     if (f.platform) bits.push(f.platform);
-    if (f.days) bits.push(f.days === '1' ? 'last 24 h' : 'last ' + f.days + ' days');
+    if (f.days === 'custom') {
+      bits.push(f.from && f.to ? shortStamp(f.from) + ' to ' + shortStamp(f.to)
+        : f.from ? 'since ' + shortStamp(f.from) : 'up to ' + shortStamp(f.to));
+    } else if (f.days) {
+      bits.push(windowLabel(f.days).toLowerCase());
+    }
+    if (f.date_field) bits.push('by collected date');
     if (f.types) bits.push('type: ' + f.types);
     if (f.pinned) bits.push('pinned only');
     if (f.q) bits.push('“' + f.q + '”');
-    if (f.sort && f.sort !== FILTER_DEFAULTS.sort) {
-      const opt = $('#sortSel') && $('#sortSel').querySelector('option[value="' + f.sort + '"]');
-      bits.push('sorted by ' + (opt ? opt.textContent.toLowerCase() : f.sort));
+    if ((f.sort && f.sort !== FILTER_DEFAULTS.sort) ||
+        (f.dir && f.dir !== FILTER_DEFAULTS.dir)) {
+      const key = f.sort || FILTER_DEFAULTS.sort;
+      const opt = $('#sortSel') && $('#sortSel').querySelector('option[value="' + key + '"]');
+      bits.push('sorted by ' + (opt ? opt.textContent.toLowerCase() : key) +
+        ((f.dir || FILTER_DEFAULTS.dir) === 'asc' ? ' (ascending)' : ''));
     }
     return bits.length ? bits.join(' · ') : 'No filters (everything)';
   }
@@ -1246,11 +1507,25 @@
   }
 
   function syncUrlField() {
-    const needsUrl = selectedSources().some((k) => {
+    const chosen = selectedSources();
+    const needsUrl = chosen.some((k) => {
       const el = document.querySelector('.mon-src-item[data-src="' + k + '"]');
       return el && el.dataset.needsurl === '1';
     });
     $('#urlFields').style.display = needsUrl ? '' : 'none';
+
+    // The Page name and comment options only mean anything to the Facebook
+    // collector, so they stay out of the way until it is selected.
+    const fb = $('#fbFields');
+    if (fb) fb.style.display = chosen.includes('facebook') ? '' : 'none';
+  }
+
+  const cComments = $('#c-comments');
+  if (cComments) {
+    cComments.addEventListener('change', () => {
+      const opts = $('#fbCommentOpts');
+      if (opts) opts.style.display = cComments.checked ? '' : 'none';
+    });
   }
 
   // The collapsed summary has to say what is selected, or it just hides the
@@ -1373,6 +1648,20 @@
     const days = $('#c-days') ? $('#c-days').value : '';
     const options = { limit };
     sources.forEach((k) => { options[k] = { limit, url }; });
+
+    // Facebook takes a Page name and, optionally, the comment threads under
+    // each post it finds there.
+    if (sources.includes('facebook')) {
+      const page = $('#c-page') ? $('#c-page').value.trim() : '';
+      const wantComments = $('#c-comments') ? $('#c-comments').checked : false;
+      const climit = parseInt($('#c-comment-limit') &&
+        $('#c-comment-limit').value, 10) || 50;
+      options.facebook = Object.assign(options.facebook || {}, {
+        limit, url, page,
+        with_comments: wantComments,
+        comment_limit: climit,
+      });
+    }
 
     try {
       const data = await Data.collect(watch, sources, {
@@ -1597,76 +1886,13 @@
   }
 
   /* ── Link map ─────────────────────────────────────────────────────────── */
+  //
+  // The dialog, the merge behaviour and the preview all live in
+  // linkmap_integrate.js, so the watch page, the post list and the profile
+  // page reach exactly the same flow rather than three drifting copies.
 
-  $('#btnLinkmap').addEventListener('click', async () => {
-    let preview, graphs;
-    try {
-      preview = await Data.graph(watch, { min_score: 30 });
-      graphs = (await Store.all('graphs'))
-        .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
-        .slice(0, 20);
-    } catch (e) { showToast(e.message, 'danger'); return; }
-
-    const st = preview.stats;
-    const body = $('#lmBody');
-    body.innerHTML =
-      '<p class="mon-note">Builds an entity graph: accounts, the domains they ' +
-      'link to, where those resolve, and any matching profiles. Accounts sharing ' +
-      'a domain become visible as shared nodes.</p>' +
-      '<div class="row g-2 mb-2">' +
-        '<div class="col-6"><label class="form-label">Minimum risk score</label>' +
-        '<input type="number" class="form-control form-control-sm" id="lm-min" value="30" min="0" max="100"></div>' +
-        '<div class="col-6"><label class="form-label">Add to</label>' +
-        '<select class="form-select form-select-sm" id="lm-graph">' +
-        '<option value="">— new map —</option>' +
-        graphs.map((g) => '<option value="' + g.id + '">' + esc(g.title) + '</option>').join('') +
-        '</select></div>' +
-      '</div>' +
-      '<div class="d-flex gap-3 flex-wrap mb-2" style="font-size:12px">' +
-        '<label><input type="checkbox" id="lm-domains" checked> Include domains</label>' +
-        '<label><input type="checkbox" id="lm-profiles" checked> Include profiles</label>' +
-        '<label><input type="checkbox" id="lm-geo"> Include host locations</label>' +
-      '</div>' +
-      '<div class="mon-note" id="lm-stats">Would draw <b>' + st.nodes + '</b> nodes and <b>' +
-      st.edges + '</b> edges from ' + st.posts + ' post(s); ' + st.skipped + ' below the threshold.</div>';
-
-    const modal = new bootstrap.Modal('#linkmapModal');
-    modal.show();
-
-    $('#lm-build').onclick = async () => {
-      const btn = $('#lm-build');
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fa fa-spinner fa-spin me-1"></i> Building…';
-      try {
-        const targetId = $('#lm-graph').value ? Number($('#lm-graph').value) : null;
-        const existing = targetId ? await Store.get('graphs', targetId) : null;
-        const res = await Data.graph(watch, {
-          min_score: parseInt($('#lm-min').value, 10) || 0,
-          domains: $('#lm-domains').checked,
-          profiles: $('#lm-profiles').checked,
-          geo: $('#lm-geo').checked,
-          existing: existing ? existing.graph_json : null,
-        });
-        const row = existing || {
-          title: watch.name + ' - Signal Map',
-          profile_id: watch.profile_id || null,
-          created_at: new Date().toISOString().slice(0, 19),
-        };
-        row.graph_json = JSON.stringify(res.graph);
-        row.updated_at = new Date().toISOString().slice(0, 19);
-        const gid = await Store.put('graphs', row);
-        modal.hide();
-        showToast(res.merged
-          ? 'Merged in ' + res.merged.nodes_added + ' new node(s)'
-          : 'Built a map with ' + res.stats.nodes + ' nodes', 'success');
-        window.open('/linkmap/edit?id=' + gid, '_blank');
-      } catch (e) {
-        showToast(e.message, 'danger');
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-diagram-project me-1"></i> Build map';
-      }
-    };
+  $('#btnLinkmap').addEventListener('click', () => {
+    LinkMapAdd.openAndShow({ kind: 'watch', watch });
   });
 
   /* ── Capabilities ─────────────────────────────────────────────────────── */
@@ -1866,7 +2092,10 @@
       ['verdict', 'status', 'platform'].forEach((k) => {
         if (f[k]) bits.push(String(f[k]).toLowerCase().replace(/[^a-z0-9]+/g, '-'));
       });
-      if (f.days) bits.push(f.days + 'd');
+      // A window in the filename, so two exports taken minutes apart over
+      // different ranges do not overwrite each other.
+      if (f.days === 'custom') bits.push('range');
+      else if (f.days) bits.push(/h$/.test(f.days) ? f.days : f.days + 'd');
       if (f.pinned) bits.push('pinned');
       if (f.q || f.types) bits.push('search');
     }

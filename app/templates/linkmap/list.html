@@ -7,9 +7,16 @@
     <div class="page-title">Link <span>Mapper</span></div>
     <div class="page-subtitle">Visual node-graph intelligence mapping</div>
   </div>
-  <button class="btn btn-primary" id="btnNewMap">
-    <i class="fa fa-plus"></i> New Map
-  </button>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline" id="btnImportMap"
+            title="Load a map written by scripts/comments.py --linkmap">
+      <i class="fa fa-file-import"></i> Import map
+    </button>
+    <input type="file" id="mapFile" accept="application/json,.json" hidden>
+    <button class="btn btn-primary" id="btnNewMap">
+      <i class="fa fa-plus"></i> New Map
+    </button>
+  </div>
 </div>
 
 <div class="page-body">
@@ -34,6 +41,57 @@
       updated_at: new Date().toISOString().slice(0, 19),
     });
     window.location = '/linkmap/edit?id=' + id;
+  });
+
+  /* Import a map file written by the command-line tools.
+   *
+   * `scripts/comments.py --linkmap` writes one of these, which is how a
+   * scheduled comment sweep gets its graph in front of an analyst without the
+   * script needing any access to this browser's storage. */
+  document.getElementById('btnImportMap').addEventListener('click', () => {
+    document.getElementById('mapFile').click();
+  });
+
+  document.getElementById('mapFile').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';           // so the same file can be picked again
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const maps = Array.isArray(data) ? data : [data];
+      let added = 0;
+      for (const m of maps) {
+        // Accept both the script's output and a map exported from here.
+        const raw = m.graph_json
+          || (m.graph ? JSON.stringify(m.graph)
+            : (m.nodes ? JSON.stringify({ nodes: m.nodes, edges: m.edges || [] })
+              : null));
+        if (!raw) continue;
+        // Parse before storing: a corrupt map that only fails when opened is
+        // far more confusing than one rejected at the door.
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed.nodes)) continue;
+        await Store.put('graphs', {
+          title: m.title || file.name.replace(/\.json$/i, ''),
+          profile_id: m.profile_id || null,
+          graph_json: JSON.stringify({ nodes: parsed.nodes,
+                                       edges: parsed.edges || [] }),
+          created_at: m.created_at || new Date().toISOString().slice(0, 19),
+          updated_at: new Date().toISOString().slice(0, 19),
+        });
+        added += 1;
+      }
+      if (!added) {
+        showToast('That file holds no map this app can read', 'warning');
+        return;
+      }
+      showToast('Imported ' + added + ' map(s)', 'success');
+      render();
+    } catch (err) {
+      // A parse error quotes the file's own contents back, and the toast
+      // renders as HTML, so the message is escaped before it goes in.
+      showToast('Could not read that file: ' + esc(err.message), 'danger');
+    }
   });
 
   async function render() {

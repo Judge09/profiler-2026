@@ -1,0 +1,21 @@
+{
+  "id": 1,
+  "name": "BARMM Election Integrity",
+  "subject": "NAMFREL",
+
+  "kw_required": "BARMM",
+  "kw_optional": "election\ncanvassing\nadvisory\nvoter\nprecinct",
+  "kw_excluded": "basketball\nsatire",
+  "kw_match_mode": "any",
+
+  "mode_release": false,
+  "mode_hunter": false,
+
+  "reference_text": "",
+  "official_accounts": "Facebook NAMFREL\nX @namfrel",
+  "official_domains": "namfrel.com.ph",
+
+  "custom_flags": "",
+  "threshold_review": 30,
+  "threshold_high": 60
+}

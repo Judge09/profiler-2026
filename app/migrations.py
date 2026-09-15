@@ -30,6 +30,10 @@ COLUMNS = {
         ("cached_json", "TEXT"),
         ("cache_rules_hash", "TEXT"),
         ("posted_ts", "DATETIME"),
+        ("kind", "TEXT DEFAULT 'post'"),
+        ("parent_url", "TEXT DEFAULT ''"),
+        ("parent_author", "TEXT DEFAULT ''"),
+        ("engagement_json", "TEXT DEFAULT '{}'"),
     ],
 }
 
@@ -41,6 +45,7 @@ INDEXES = [
     ("ix_post_watch_posted", "monitor_post", "watch_id, posted_ts"),
     ("ix_post_watch_status", "monitor_post", "watch_id, status"),
     ("ix_post_rules_hash", "monitor_post", "cache_rules_hash"),
+    ("ix_post_watch_kind", "monitor_post", "watch_id, kind"),
 ]
 
 

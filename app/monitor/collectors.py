@@ -872,6 +872,33 @@ def _cred(platform, key):
     return None
 
 
+def _vault_session(platform):
+    """An authenticated `requests.Session` for a platform, or None.
+
+    Facebook collection works anonymously on some Pages and reliably on many
+    more with a session, so this is an optional upgrade rather than a
+    requirement: `None` means "carry on unauthenticated".
+    """
+    try:
+        from . import authfetch, vault
+        from ..models import MonitorCredential
+        if not vault.is_unlocked():
+            return None
+        rows = MonitorCredential.query.filter_by(platform=platform,
+                                                 enabled=True).all()
+        for c in rows:
+            secret = vault.decrypt(c.secret_blob) or {}
+            cookies = secret.get("cookies") or []
+            if cookies:
+                return authfetch._session_for(
+                    cookies, "https://mbasic.%s.com" % platform)
+    except Exception:
+        # A vault problem must never take a collection run down; the
+        # unauthenticated path still works.
+        return None
+    return None
+
+
 def fetch_praw(query, limit=MAX_PER_SOURCE, since=None, subreddit=None):
     """Authenticated Reddit via PRAW.
 
@@ -1568,59 +1595,54 @@ def fetch_x(query, limit=MAX_PER_SOURCE, since=None, handle=None, use_api=True):
         manual_url=manual, dorks=dorks)
 
 
-def fetch_facebook(query, limit=MAX_PER_SOURCE, since=None, page=None):
+def fetch_facebook(query, limit=MAX_PER_SOURCE, since=None, page=None,
+                   with_comments=False, comment_limit=50, budget=None):
     """Collect Facebook posts through whatever route is actually open.
 
     Facebook has no public search API and blocks unauthenticated requests.
-    Public *pages* do still publish readable content, so a named page is worth
-    fetching directly; otherwise fall back to the index and dorks.
+    Public *Pages* do still publish readable content through the no-JavaScript
+    `mbasic` interface, so a named Page is fetched there first -- that is the
+    only route that returns whole posts with permalinks, timestamps and
+    engagement counts, and with `with_comments` their comment threads too.
+    Without a Page name there is nothing to fetch directly, so fall back to the
+    search index and targeted dorks.
     """
     manual = "https://www.facebook.com/search/posts?q=%s" % quote_plus(query)
     notes, posts = [], []
 
-    # 1. A named public page, which sometimes renders without a session.
+    # 1. A named public page, read through the mbasic interface. This is the
+    #    only route that yields whole posts with permalinks and timestamps, so
+    #    it is tried first and upgraded with a vault session when one exists.
     if page:
-        name = re.sub(r"^https?://(?:www\.|m\.|mbasic\.)?facebook\.com/", "",
-                      str(page)).strip("/").split("?")[0]
-        for host in ("mbasic.facebook.com", "m.facebook.com"):
-            try:
-                resp = http_get("https://%s/%s" % (host, quote_plus(name)))
-                if resp.status_code == 200 and "login" not in resp.url.lower():
-                    blocks = re.findall(
-                        r"(?is)<(?:p|div)[^>]*>([^<]{60,1200})</(?:p|div)>", resp.text)
-                    for b in blocks[:limit]:
-                        text = _clean(b)
-                        if len(text) < 60:
-                            continue
-                        posts.append({
-                            "platform": "Facebook", "author": name,
-                            "handle": name, "verified": False,
-                            "text": text[:4000],
-                            "url": "https://www.facebook.com/" + name,
-                            "link_kind": "direct", "posted_at": None,
-                            "source_url": resp.url,
-                        })
-                    if posts:
-                        notes.append("read %d block(s) from the public page" % len(posts))
-                        break
-            except requests.exceptions.RequestException:
-                continue
-        if not posts:
-            notes.append("the public page did not render without a session")
+        from . import facebook as fb
+        result = fb.collect_page(page, limit=limit,
+                                 session=_vault_session("facebook"),
+                                 since=since, with_comments=with_comments,
+                                 comment_limit=comment_limit,
+                                 budget=budget)
+        if result["ok"]:
+            posts.extend(result["posts"])
+        notes.append(result["note"])
 
-    # 2. The news index.
-    if len(posts) < limit:
+    # Comments are attached to the posts above, not a separate quota. Counting
+    # them against `limit` would make "25 posts with comments" return five
+    # posts and twenty replies.
+    direct_posts = [p for p in posts if p.get("kind") != "comment"]
+    comments = [p for p in posts if p.get("kind") == "comment"]
+
+    # 2. The news index, only to top up what the Page route did not supply.
+    if len(direct_posts) < limit:
         indexed, note = _social_via_index(
             "facebook", ('"%s" %s' % (page, query)) if page else query,
-            limit - len(posts), since)
-        posts.extend(indexed)
+            limit - len(direct_posts), since)
+        direct_posts.extend(indexed)
         notes.append(note)
 
     dorks = _social_dorks("facebook", query)
-    if posts:
-        return _result(True, posts[:limit],
-                       "%s. Facebook blocks direct scraping, so most of this came "
-                       "from the search index -- open the dork links for the rest."
+    if direct_posts or comments:
+        return _result(True, direct_posts[:limit] + comments,
+                       "%s. Facebook blocks most direct scraping -- open the "
+                       "dork links for what is not covered here."
                        % "; ".join(n for n in notes if n),
                        manual_url=manual, dorks=dorks)
 
@@ -1630,6 +1652,30 @@ def fetch_facebook(query, limit=MAX_PER_SOURCE, since=None, page=None):
               "requests. %s. Use the dork links, or add a session to the vault."
               % "; ".join(n for n in notes if n)),
         manual_url=manual, dorks=dorks)
+
+
+def fetch_fb_comments(query, limit=MAX_PER_SOURCE, since=None, url=None,
+                      max_pages=5):
+    """Collect the comment thread under one public Facebook post.
+
+    Comments are where a coordinated push is usually most visible: the post
+    itself is often bland while the replies carry the scam link, the threat or
+    the repeated talking point. They come back tagged `kind="comment"` and are
+    scored by exactly the same engine as posts.
+    """
+    target = url or (query if str(query or "").startswith("http") else "")
+    if not target:
+        return _result(False, note="Paste the URL of the Facebook post whose "
+                                   "comments you want to read.")
+    from . import facebook as fb
+    result = fb.collect_comments(target, limit=limit,
+                                 session=_vault_session("facebook"),
+                                 max_pages=max_pages)
+    if result["ok"] and since:
+        kept = fb._apply_since(result["posts"], since)
+        result["posts"] = kept
+        result["note"] = "%d comment(s) within the date window" % len(kept)
+    return result
 
 
 # -- Dispatch ----------------------------------------------------------------
@@ -1697,7 +1743,14 @@ COLLECTORS = {
     # targeted dorks for the rest, rather than one generic link.
     "facebook": lambda q, o: fetch_facebook(q, _opt(o, "limit", MAX_PER_SOURCE),
                                             _opt(o, "since"),
-                                            _opt(o, "page") or _opt(o, "url")),
+                                            _opt(o, "page") or _opt(o, "url"),
+                                            bool(_opt(o, "with_comments", False)),
+                                            int(_opt(o, "comment_limit", 50)),
+                                            _opt(o, "budget")),
+    "fb_comments": lambda q, o: fetch_fb_comments(q, _opt(o, "limit", MAX_PER_SOURCE),
+                                                  _opt(o, "since"),
+                                                  _opt(o, "url") or _opt(o, "post_url"),
+                                                  int(_opt(o, "max_pages", 5))),
     "x": lambda q, o: fetch_x(q, _opt(o, "limit", MAX_PER_SOURCE),
                               _opt(o, "since"),
                               _opt(o, "handle") or _opt(o, "url")),
@@ -1767,9 +1820,14 @@ SOURCE_META = [
      "needs_url": False,
      "desc": "Pulls indexed X posts, then gives targeted dorks. Uses the API "
              "or a vault session when one exists."},
-    {"key": "facebook", "name": "Facebook", "live": True, "group": "Social",
-     "desc": "Pulls indexed Facebook posts and public pages, then gives "
-             "targeted dorks. Add a page name to read it directly."},
+    {"key": "facebook", "name": "Facebook Page", "live": True, "group": "Social",
+     "desc": "Reads a public Page through mbasic: whole posts with permalinks, "
+             "timestamps and reaction counts. Name a Page for the best results; "
+             "a vault session reaches more of them."},
+    {"key": "fb_comments", "name": "Facebook comments", "live": True,
+     "needs_url": True, "group": "Social",
+     "desc": "Reads the comment thread under one public post, paging through "
+             "'View more comments'. Scored exactly like posts."},
     {"key": "instagram", "name": "Instagram", "live": False, "group": "Login-walled",
      "desc": "Login-walled. Opens the tag page for manual collection."},
     {"key": "tiktok", "name": "TikTok", "live": False, "group": "Login-walled",

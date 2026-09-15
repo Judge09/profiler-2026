@@ -293,24 +293,56 @@
 
       const term = (o.q || '').toLowerCase();
       const wantTypes = (o.types || '').toLowerCase();
-      // The toolbar sends a `days` window; `since` is an explicit cut-off. Both
-      // collapse to one timestamp here -- `days` used to be dropped on the
-      // floor, which made the date filter look applied but do nothing.
-      let since = o.since ? new Date(o.since).getTime() : null;
-      const days = parseInt(o.days, 10);
-      if (!since && days > 0) since = Date.now() - days * 86400000;
+
+      // The time window, in whichever form the caller used:
+      //
+      //   days           a preset span, in hours ('1h', '6h') or days ('7')
+      //   from / to      the toolbar's explicit range
+      //   since / until  the same bounds, under the names other callers use
+      //
+      // All of it collapses to a pair of timestamps here, so the matcher only
+      // ever deals with numbers. (`days` used to be dropped on the floor,
+      // which made the date filter look applied but do nothing.)
+      //
+      // Bounds are LOCAL wall-clock: the analyst typed "22:30" meaning half
+      // past ten where they are sitting, so they are parsed as local. Stored
+      // post timestamps are the opposite -- UTC with the zone stripped -- and
+      // go through `parseStored`. Confusing the two silently shifts everything
+      // by the viewer's UTC offset.
+      let since = Date.parse(o.since || o.from || '');
+      let until = Date.parse(o.until || o.to || '');
       if (Number.isNaN(since)) since = null;
+      if (Number.isNaN(until)) until = null;
+      if (since === null && o.days !== 'custom') {
+        const span = windowMs(o.days);
+        if (span) since = Date.now() - span;
+      }
+      // A bound typed to the minute means that whole minute. Without this, a
+      // range ending 22:30 drops a post published at 22:30:45, which reads as
+      // the filter losing posts.
+      if (until !== null && !/:\d{2}:\d{2}/.test(String(o.until || o.to || ''))) {
+        until += 59999;
+      }
 
       const match = (p) => {
         if (o.verdict && o.verdict !== 'all' && effVerdict(p) !== o.verdict) return false;
         if (o.status && p.status !== o.status) return false;
+        // Posts collected before comments existed carry no `kind`; they are
+        // posts, so treat a missing value as one rather than hiding them.
+        if (o.kind && (p.kind || 'post') !== o.kind) return false;
         if (o.platform && p.platform !== o.platform) return false;
         if (o.pinned && !p.pinned) return false;
         if (o.profile_id && p.profile_id !== o.profile_id) return false;
         if (wantTypes && !(p.types || []).join(',').toLowerCase().includes(wantTypes)) return false;
-        if (since) {
-          const ts = Date.parse(p.posted_ts || p.collected_at || '');
-          if (!ts || ts < since) return false;
+        if (since || until) {
+          // `date_field` chooses what the window applies to: when the post was
+          // published (the default, which is what "last hour" usually means),
+          // or when it was collected -- the right question after a sweep, when
+          // you want what the last run brought in regardless of post age.
+          const ts = dateOf(p, o.date_field === 'collected' ? 'collected' : 'posted');
+          if (!ts) return false;
+          if (since && ts < since) return false;
+          if (until && ts > until) return false;
         }
         if (term) {
           const hay = (p.author + ' ' + p.handle + ' ' + p.text + ' ' +
@@ -332,7 +364,7 @@
         req.onerror = () => reject(req.error);
       });
 
-      rows.sort(sorter(o.sort || 'risk'));
+      rows.sort(sorter(o.sort || 'risk', o.dir));
 
       const perPage = Math.max(1, o.per_page || 25);
       const pages = Math.max(1, Math.ceil(rows.length / perPage));
@@ -528,27 +560,110 @@
     return p.manual_score != null ? p.manual_score : (p.score || 0);
   }
 
-  function sorter(kind) {
-    const byScore = (a, b) => effScore(b) - effScore(a);
-    const byDate = (a, b, dir) => {
-      const ta = Date.parse(a.posted_ts || a.collected_at || '') || 0;
-      const tb = Date.parse(b.posted_ts || b.collected_at || '') || 0;
-      return dir * (tb - ta);
-    };
-    const inner = {
-      risk: byScore,
-      recent: (a, b) => byDate(a, b, 1),
-      oldest: (a, b) => byDate(a, b, -1),
-      platform: (a, b) => String(a.platform).localeCompare(String(b.platform)) || byScore(a, b),
-      status: (a, b) => String(a.status).localeCompare(String(b.status)) || byScore(a, b),
-      relevance: (a, b) => (b.relevance || 0) - (a.relevance || 0) || byScore(a, b),
-    }[kind] || byScore;
+  /* How long a preset time window is, in milliseconds.
+   *
+   * Accepts hours ('1h', '12h') and days ('7', '30', or '7d'). Returns 0 for
+   * anything unrecognised, which the caller reads as "no window" -- a filter
+   * that silently matched nothing would look like an empty watch.
+   */
+  function windowMs(value) {
+    const raw = String(value == null ? '' : value).trim().toLowerCase();
+    if (!raw) return 0;
+    const m = raw.match(/^(\d+(?:\.\d+)?)\s*([hd]?)$/);
+    if (!m) return 0;
+    const n = parseFloat(m[1]);
+    if (!(n > 0)) return 0;
+    return m[2] === 'h' ? n * 3600000 : n * 86400000;
+  }
+
+  // Total engagement on a post, for the engagement sort. Absent counters are
+  // zero rather than missing, so posts from sources that report none sink to
+  // the bottom instead of scattering unpredictably.
+  function engagementOf(p) {
+    const e = p.engagement || {};
+    return (Number(e.reactions) || 0) + (Number(e.comments) || 0) +
+      (Number(e.shares) || 0);
+  }
+
+  // The name a post is grouped under when sorting by author.
+  function authorKey(p) {
+    return String(p.handle || p.author || '').toLowerCase();
+  }
+
+  /* Comparators written as strict DESCENDING order: highest score, newest
+   * date, Z to A. `dir: 'asc'` reverses them.
+   *
+   * Writing every field the same way is what makes the direction toggle mean
+   * one consistent thing. Whether a sort *starts* ascending or descending is a
+   * separate question, and the toolbar decides it (see NATURAL_DIR) -- picking
+   * "Author" opens A-Z, but "descending" here still means Z-A.
+   */
+  const SORT_FIELDS = {
+    risk: (a, b) => effScore(b) - effScore(a),
+    posted: (a, b) => dateOf(b, 'posted') - dateOf(a, 'posted'),
+    collected: (a, b) => dateOf(b, 'collected') - dateOf(a, 'collected'),
+    relevance: (a, b) => (b.relevance || 0) - (a.relevance || 0),
+    engagement: (a, b) => engagementOf(b) - engagementOf(a),
+    platform: (a, b) => String(b.platform || '').localeCompare(String(a.platform || '')),
+    status: (a, b) => String(b.status || '').localeCompare(String(a.status || '')),
+    author: (a, b) => authorKey(b).localeCompare(authorKey(a)),
+  };
+
+  /* Parse a stored timestamp, correctly, as UTC.
+   *
+   * Both sides write UTC with the zone stripped: the browser via
+   * `toISOString().slice(0, 19)` and the server via `utcnow().isoformat()`.
+   * `Date.parse` reads a zoneless date-time as LOCAL time, so every stored
+   * stamp was being shifted by the viewer's UTC offset -- eight hours in
+   * Manila. At day scale that was invisible; an "in the last hour" filter it
+   * breaks outright, hiding posts that were collected minutes ago.
+   *
+   * So a bare `YYYY-MM-DDTHH:MM:SS` gets a 'Z'. Anything that already names a
+   * zone, or is a date only, is left alone.
+   */
+  function parseStored(value) {
+    const raw = String(value == null ? '' : value).trim();
+    if (!raw) return 0;
+    const bare = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(raw);
+    return Date.parse(bare ? raw.replace(' ', 'T') + 'Z' : raw) || 0;
+  }
+
+  function dateOf(p, field) {
+    return field === 'collected'
+      ? (parseStored(p.collected_at) || parseStored(p.posted_ts))
+      : (parseStored(p.posted_ts) || parseStored(p.collected_at));
+  }
+
+  /* Build the comparator for a sort key and direction.
+   *
+   * `dir` is 'desc' (the key's natural order) or 'asc' (reversed). The legacy
+   * keys `recent` and `oldest` still work: they were a sort and a direction
+   * fused together, and saved presets and shared links from before the
+   * direction toggle existed still carry them.
+   */
+  function sorter(kind, dir) {
+    let key = kind;
+    let direction = dir === 'asc' ? 'asc' : 'desc';
+    if (kind === 'recent') { key = 'posted'; direction = dir ? direction : 'desc'; }
+    if (kind === 'oldest') { key = 'posted'; direction = dir ? direction : 'asc'; }
+
+    const base = SORT_FIELDS[key] || SORT_FIELDS.risk;
+    const sign = direction === 'asc' ? -1 : 1;
+    // Risk breaks every tie, so equal dates or shared authors still read
+    // worst-first instead of in arbitrary insertion order.
+    const tie = SORT_FIELDS.risk;
+    const inner = (a, b) => (sign * base(a, b)) || (key === 'risk' ? 0 : tie(a, b));
+
     // Pinned posts stay on top of every ordering.
     return (a, b) => (Number(b.pinned || 0) - Number(a.pinned || 0)) || inner(a, b);
   }
 
   api.effVerdict = effVerdict;
   api.effScore = effScore;
+  // Shared so the UI reads stored timestamps the same way the queries do --
+  // two parsers would drift, and this one is the difference between "5 min
+  // ago" and "8 h ago" for anyone not sitting on UTC.
+  api.parseStored = parseStored;
 
   global.Store = api;
 })(window);

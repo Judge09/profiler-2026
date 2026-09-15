@@ -289,6 +289,33 @@
           </div>
         </div>
 
+        <!-- Facebook-specific options, shown only when a Facebook source is on -->
+        <div id="fbFields" class="mt-2" style="display:none">
+          <label class="form-label">Facebook Page</label>
+          <input class="form-control form-control-sm" id="c-page"
+                 placeholder="NAMFREL — or paste the Page URL">
+          <div class="form-text">
+            Naming a Page reads its posts directly through Facebook's
+            no-JavaScript interface: whole text, permalinks, timestamps and
+            reaction counts. Without one, only what the news index holds is
+            available.
+          </div>
+          <label class="mt-2" style="font-size:12px">
+            <input type="checkbox" id="c-comments"> Also read the comments under
+            each post
+          </label>
+          <div id="fbCommentOpts" class="mt-1" style="display:none">
+            <label class="form-label">Maximum comments per post</label>
+            <input type="number" class="form-control form-control-sm"
+                   id="c-comment-limit" value="50" min="1" max="500"
+                   style="max-width:140px">
+            <div class="form-text">
+              Comments are scored by the same rules as posts and are marked as
+              replies, so they can be filtered apart.
+            </div>
+          </div>
+        </div>
+
         <!-- Authenticated collection, when the vault has usable credentials -->
         <div id="authRow" class="mt-3 pt-3" style="display:none;border-top:1px solid var(--border)">
           <div class="d-flex gap-2 align-items-end flex-wrap">
@@ -336,21 +363,47 @@
         <option value="">Any status</option>
         {% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
       </select>
-      <select class="form-select form-select-sm" id="daysSel" style="width:auto">
+      <select class="form-select form-select-sm" id="kindSel" style="width:auto"
+              title="Posts, or the replies underneath them">
+        <option value="">Posts and comments</option>
+        <option value="post">Posts only</option>
+        <option value="comment">Comments only</option>
+      </select>
+      <select class="form-select form-select-sm" id="daysSel" style="width:auto"
+              title="How far back to look">
         <option value="">Any date</option>
-        <option value="1">Last 24 h</option>
+        <option value="1h">Last hour</option>
+        <option value="3h">Last 3 hours</option>
+        <option value="6h">Last 6 hours</option>
+        <option value="12h">Last 12 hours</option>
+        <option value="1">Last 24 hours</option>
+        <option value="3">Last 3 days</option>
         <option value="7">Last 7 days</option>
         <option value="30">Last 30 days</option>
         <option value="90">Last 90 days</option>
+        <option value="custom">Custom range…</option>
       </select>
-      <select class="form-select form-select-sm" id="sortSel" style="width:auto">
-        <option value="risk">Highest risk</option>
-        <option value="recent">Newest first</option>
-        <option value="oldest">Oldest first</option>
-        <option value="relevance">Most relevant</option>
-        <option value="platform">By platform</option>
-        <option value="status">By status</option>
+      <select class="form-select form-select-sm" id="dateFieldSel" style="width:auto"
+              title="Whether the time window applies to when a post was published or when you collected it">
+        <option value="">By post date</option>
+        <option value="collected">By collected date</option>
       </select>
+      <select class="form-select form-select-sm" id="sortSel" style="width:auto"
+              title="What to order by. Use the arrow to reverse it.">
+        <option value="risk">Risk</option>
+        <option value="posted">Post date</option>
+        <option value="collected">Collected date</option>
+        <option value="engagement">Engagement</option>
+        <option value="author">Author</option>
+        <option value="relevance">Relevance</option>
+        <option value="platform">Platform</option>
+        <option value="status">Status</option>
+      </select>
+      <button class="btn btn-outline btn-sm" id="sortDirBtn" type="button"
+              data-dir="desc" title="Reverse the sort"
+              aria-label="Reverse the sort order">
+        <i class="fa fa-arrow-down-wide-short"></i>
+      </button>
       <select class="form-select form-select-sm" id="perPageSel" style="width:auto"
               title="Posts per page">
         <option value="10">10</option>
@@ -365,6 +418,18 @@
         <i class="fa fa-filter-circle-xmark"></i></button>
       <button class="btn btn-outline btn-sm" id="btnLinkmap">
         <i class="fa fa-diagram-project me-1"></i> Link map</button>
+    </div>
+
+    <!-- Custom range, shown only when "Custom range…" is picked above. Both
+         bounds are optional: "from" alone is everything since, "to" alone is
+         everything up to. -->
+    <div id="rangeRow" class="mon-range mb-2" style="display:none">
+      <label for="rangeFrom">From</label>
+      <input type="datetime-local" class="form-control form-control-sm" id="rangeFrom">
+      <label for="rangeTo">to</label>
+      <input type="datetime-local" class="form-control form-control-sm" id="rangeTo">
+      <button class="btn btn-ghost btn-xs" id="rangeClear" type="button">Clear</button>
+      <span class="mon-range-note" id="rangeNote"></span>
     </div>
 
     <!-- Saved filters. Filters are retained across reloads and shareable via
@@ -387,6 +452,9 @@
       <select class="form-select form-select-sm" id="bulkProfile" style="width:auto">
         <option value="">Link to profile…</option>
       </select>
+      <button class="btn btn-outline btn-xs" id="bulkLinkmap"
+              title="Add the selected posts to a link map">
+        <i class="fa fa-diagram-project"></i> Add to map</button>
       <button class="btn btn-ghost btn-xs" id="bulkClear">Clear overrides</button>
       <button class="btn btn-danger btn-xs" id="bulkDelete">Delete</button>
       <button class="btn btn-ghost btn-xs" id="bulkSelectPage">Select page</button>
@@ -514,24 +582,6 @@
       <div class="modal-body">
         <p class="mon-note">Open these in a browser, then paste what you find via <b>Add manually</b> or <b>Import</b>.</p>
         <div id="dorkList" class="d-grid gap-2"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Link map builder -->
-<div class="modal fade" id="linkmapModal" tabindex="-1">
-  <div class="modal-dialog">
-    <div class="modal-content" style="background:var(--bg-card);border:1px solid var(--border)">
-      <div class="modal-header" style="border-color:var(--border)">
-        <h5 class="modal-title"><i class="fa fa-diagram-project me-2"></i>Build link map</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body" id="lmBody"></div>
-      <div class="modal-footer" style="border-color:var(--border)">
-        <button class="btn btn-ghost btn-sm" data-bs-dismiss="modal">Cancel</button>
-        <button class="btn btn-primary btn-sm" id="lm-build">
-          <i class="fa fa-diagram-project me-1"></i> Build map</button>
       </div>
     </div>
   </div>

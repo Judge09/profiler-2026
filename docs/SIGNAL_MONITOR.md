@@ -100,16 +100,75 @@ Google News, Bing News, all configured RSS feeds, Reddit, Hacker News,
 Mastodon, Lemmy, Wikipedia, YouTube channel feeds, any RSS/Atom URL, and any
 public web page.
 
-### Facebook and X
+### Facebook
 
-Both are login-walled and block scripted requests, so neither can be scraped
-directly. What they do instead:
+Facebook has no public search API, but it still serves **mbasic.facebook.com**
+— the no-JavaScript interface built for feature phones. That is the only
+Facebook surface that renders whole posts, permalinks, timestamps and comment
+threads as plain server-side HTML, so it is what the collector reads.
+
+**Name a Page** in the collection panel (`NAMFREL`, or paste its URL) and you
+get, per post:
+
+- the full post text, not a search-result snippet
+- the permalink, with tracking parameters stripped so the same post dedupes
+  across runs instead of looking new every time
+- the timestamp, including relative forms like `2 hrs` and `Yesterday`
+- reaction, comment and share counts
+
+Without a Page name there is nothing to read directly, so the collector falls
+back to the search index and the dork links below.
+
+What to expect, measured rather than assumed:
+
+| Target | Without a session | With a vault session |
+|---|---|---|
+| Public Page timeline | often, but Facebook A/B-tests a login wall | reliably |
+| A single public post | when the post itself is public | reliably |
+| Comments on a public post | usually | reliably |
+| Groups, private pages, profiles | no | only what that account can see |
+| Search | no — mbasic search is login-walled | no |
+
+When a login wall is served, the run says so plainly rather than returning
+nothing and looking like "no posts found".
+
+### Comments
+
+Tick **"Also read the comments under each post"**, or select the
+**Facebook comments** source and paste one post URL.
+
+Comments matter because they are usually where a coordinated push is most
+visible: the post is bland and deniable while the replies carry the scam link,
+the threat, or one talking point repeated by a dozen new accounts. The
+collector pages through *View more comments* rather than taking only the first
+handful, since the interesting replies are rarely at the top.
+
+Comments are stored as posts with a parent, so they inherit the whole
+pipeline — the same scoring, filters, triage, export and link map. They are
+marked with a **comment** tag naming the thread they sit under, and the
+toolbar's **Posts and comments** menu narrows the list to one or the other.
+
+One deliberate difference in scoring: **a comment inherits its parent post's
+relevance.** A reply saying *"this is fake, don't share"* names nothing the
+keyword rules look for, yet it is exactly the reply worth reading — judging it
+on its own words alone would discard it. An **excluded** term still rejects a
+comment, because that is an explicit "never this".
+
+On a serverless host the comment sweep runs under a wall-clock budget (about
+60% of `COLLECT_TIMEOUT`). When it runs out, the run returns what it gathered
+and says how many threads went unread, rather than losing everything to a
+gateway timeout. Collect again to continue, or raise `COLLECT_TIMEOUT`.
+
+### X (Twitter)
+
+X is login-walled and blocks scripted requests, so it cannot be read directly.
+Instead:
 
 1. **Collect what the search index already holds.** Google News honours a
-   `site:` restriction and indexes a useful amount of X and Facebook content,
-   including post text and timestamps. Results are filtered back to the
-   platform's own domains, so an index that quietly drops the restriction
-   cannot leak unrelated pages into a watch.
+   `site:` restriction and indexes a useful amount of X content, including post
+   text and timestamps. Results are filtered back to the platform's own
+   domains, so an index that quietly drops the restriction cannot leak
+   unrelated pages into a watch.
 2. **Recover the author where it is knowable** — from the post URL, or an
    `@handle` in the text. Newsroom banners like `LOOK:` or `BARMM ELECTIONS |`
    are deliberately *not* treated as accounts: a fabricated author would
@@ -119,12 +178,9 @@ directly. What they do instead:
    Google dorks — rather than one generic link.
 
 A stored session in the **Vault** beats all of this, and an X API token beats
-that. Both are used automatically when present.
-
-Measured, so you know what to expect: Nitter mirrors now serve an anti-bot
-challenge page, Bing's RSS silently ignores `site:`, and `mbasic.facebook.com`
-returns 400 without a session. Those paths are still attempted, but they are
-not where the results come from.
+that. Both are used automatically when present. Nitter mirrors now serve an
+anti-bot challenge page and Bing's RSS silently ignores `site:`; both are still
+attempted, but they are not where results come from.
 
 ### Sources needing an optional library
 
@@ -168,6 +224,19 @@ Scores are stored on the post alongside a fingerprint of the rules that
 produced them. Editing keywords, weights or thresholds changes that
 fingerprint, and exactly the affected posts are rescored — nothing else.
 
+### Threats are flagged in every mode
+
+Threatening language is scored whether or not Digital Hunter is on. A comment
+reading *"we know where the canvassers live"* is worth surfacing in any watch,
+and it used to be invisible unless someone had remembered to switch the mode
+on. The patterns cover veiled threats — retribution, location threats, pursuit
+— and Filipino phrasing, and are written narrowly enough that election and
+crime reporting, which uses violent vocabulary constantly, does not trip them.
+
+*Doxxing* detection stays inside Hunter mode: words like "address" and "expose"
+are ordinary in reporting, and only make sense as signals when a watch is
+specifically hunting for targeting.
+
 ### Modes
 
 - **Media Release Threat** — compares posts against an official release.
@@ -181,10 +250,48 @@ fingerprint, and exactly the affected posts are rescored — nothing else.
 ## Reading results: filters, saved views and export
 
 The toolbar above the results narrows what you are looking at: verdict (the
-legend buttons), platform, status, date window, threat type, pinned-only, free
-text, plus sort order and page size. Filtering, sorting and paging all run
-against the store, so a watch holding thousands of posts stays as responsive as
-an empty one.
+legend buttons), platform, status, posts-or-comments, time window, threat type,
+pinned-only, free text, plus sort order and page size. Filtering, sorting and
+paging all run against the store, so a watch holding thousands of posts stays as
+responsive as an empty one.
+
+### Time windows
+
+The window menu runs from **Last hour** through 3, 6 and 12 hours, then 24
+hours, 3, 7, 30 and 90 days. Hour-scale windows are what a live incident needs:
+during one, "what has landed since I last looked" is the only question, and a
+day-scale filter cannot express it.
+
+**Custom range…** opens From and To fields for an exact window — the night of
+the 14th, say, or the two hours around a rally. Either end alone works:
+`From` only is everything since, `To` only is everything up to. Bounds entered
+backwards are swapped rather than returning nothing. The range shows as a single
+chip; removing it clears both ends together.
+
+Beside the menu, **By post date / By collected date** chooses what the window
+applies to. The default is when the post was published. *By collected date* asks
+a different and often more useful question: what did the last sweep bring in,
+regardless of how old the posts themselves are — which is exactly what you want
+after a collection run that reached back weeks.
+
+### Sorting
+
+Sort by **risk, post date, collected date, engagement, author, relevance,
+platform** or **status**, and use the arrow beside the menu to reverse any of
+them. Direction is separate from the field, so every sort works both ways.
+
+- **Engagement** totals reactions, comments and shares — what actually spread,
+  as opposed to what merely scored. Only sources that report counts contribute;
+  the rest sort as zero.
+- **Author** groups repeat actors into blocks instead of scattering them, which
+  is how a handful of accounts posting constantly becomes visible.
+- **Collected date** separates when you found something from when it was said.
+
+Choosing a sort sets the direction that reads naturally for it — highest risk,
+newest date, but A–Z for names — and the arrow overrides that. Pinned posts stay
+on top of every ordering. Sort and direction are view preferences, not filters,
+so they are not counted in the filter badge and a saved view does not force them
+on you.
 
 **Filters are retained.** They are mirrored into the URL and saved per watch, so
 a reload, a trip to the link map and back, or reopening the watch tomorrow all
@@ -248,8 +355,44 @@ subject ── account ── domain ── location
 Two accounts pushing the same domain become two edges into one node, which is
 how shared infrastructure becomes visible.
 
-You can **merge into an existing map** — entities are matched on label and
-type, so re-running never duplicates nodes.
+### Adding to a map from anywhere
+
+There is one **Add to link map** dialog, reached from three places:
+
+| From | Button | What goes on the map |
+|---|---|---|
+| A watch | **Link map**, above the post list | every flagged post in the watch |
+| Selected posts | **Add to map**, in the selection bar | exactly what you ticked |
+| A profile | **Link map**, on the profile page | the profile and its accounts |
+
+Each opens the same dialog, which asks the one question that matters: **a new
+map, or the one you are already building?** Merging is the default, because
+"add this to the map I am working on" is the common case — a brand-new map per
+action is what made the old flow tedious.
+
+Entities are matched on label and type, so adding the same thing twice never
+duplicates nodes, and a profile merged into a post-built map joins at the node
+that already stands for it. A live count tells you what would be drawn before
+you commit, so nobody adds four hundred nodes by accident.
+
+A selection you ticked by hand is added **whole** — no verdict or score filter
+is applied on top of it, since you already chose those posts.
+
+### Comments on the map
+
+Commenters attach to the account whose thread they replied to, not to the
+subject directly. That is the point of collecting comments: twenty fresh
+accounts converging on one post is a shape you can see, and it is invisible in
+a list. When the thread belongs to the watched subject itself, the commenters
+attach straight to the subject node rather than to a duplicate of it.
+
+### Importing a map built by a script
+
+`scripts/comments.py --linkmap FILE` writes a map file. **Import map** on the
+Link Maps page loads it, which is how a scheduled sweep puts its graph in front
+of an analyst without the script needing any access to the browser's storage.
+
+### Network analysis
 
 The **network analysis** ranks accounts by betweenness centrality when
 `networkx` is installed: who *bridges* otherwise separate clusters, which
