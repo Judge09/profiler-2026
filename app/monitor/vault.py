@@ -240,6 +240,16 @@ PLATFORM_GUIDANCE = {
         "note": ("Prefer an OAuth app token: it is officially supported, stable, "
                  "and lifts the rate limits that block anonymous access."),
     },
+    "hibp": {
+        "name": "Have I Been Pwned (API key)",
+        "cookie_names": [],
+        "domain": "haveibeenpwned.com",
+        "reliability": "high",
+        "note": ("A paid API key, stored as `api_key`. It enables per-address "
+                 "breach lookup only -- the domain check and the password "
+                 "check work without it. Buy one at "
+                 "haveibeenpwned.com/API/Key."),
+    },
     "generic": {
         "name": "Other site",
         "cookie_names": [],

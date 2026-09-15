@@ -58,6 +58,16 @@ def _check_platform(username, name, data):
             else:
                 result["status"] = "not_found"
 
+        # Some platforms answer 200 whether or not the account exists: they
+        # serve a JavaScript shell or a bot-check page whose bytes are
+        # identical either way, so no HTTP check can distinguish them. Left
+        # alone they produced roughly a third of all "found" results falsely,
+        # which is worse than no answer -- an analyst cannot tell the real
+        # hits from the invented ones. A "not found" from them is still
+        # meaningful, so only the positive is downgraded.
+        if result["status"] == "found" and data.get("verifiable") is False:
+            result["status"] = "unverifiable"
+
     except req_lib.exceptions.Timeout:
         result["status"] = "timeout"
     except req_lib.exceptions.ConnectionError:

@@ -41,7 +41,7 @@ from xml.etree import ElementTree
 import requests
 from requests.adapters import HTTPAdapter
 
-from . import capabilities
+from . import capabilities, safefetch
 
 try:  # urllib3 v2 and v1 keep Retry in different places
     from urllib3.util.retry import Retry
@@ -149,14 +149,33 @@ def cache_clear():
 
 
 def http_get(url, timeout=TIMEOUT, headers=None, use_cache=True, **kw):
-    """GET with pooling, retries and a short response cache."""
+    """GET with pooling, retries, a short response cache and an SSRF guard.
+
+    Every collector fetches through here, so this is where user-supplied URLs
+    are checked: without it, typing `http://169.254.169.254/` into the URL
+    field makes the server read its own cloud credentials and hand them back
+    as post text. Redirects are followed one hop at a time by `safe_get`,
+    because an allowed URL can otherwise redirect straight to localhost.
+    """
+    from . import safefetch
+
     key = "GET:" + url
     if use_cache:
         cached = _cache_get(key)
         if cached is not None:
             return cached
-    resp = session().get(url, headers=_headers_for(url, headers),
-                         timeout=timeout, **kw)
+
+    def _fetch(target, **inner):
+        return session().get(target, headers=_headers_for(target, headers),
+                             timeout=timeout, **inner)
+
+    follow = kw.pop("allow_redirects", True)
+    if follow:
+        resp = safefetch.safe_get(url, _fetch, **kw)
+    else:
+        safefetch.check_url(url)
+        resp = _fetch(url, allow_redirects=False, **kw)
+
     if use_cache and resp.status_code == 200:
         _cache_put(key, resp)
     return resp
@@ -1930,6 +1949,8 @@ def collect(source_keys, query, options=None, max_workers=8, since=None):
             key = futures[future]
             try:
                 r, elapsed = future.result()
+            except safefetch.BlockedURL as e:
+                r, elapsed = _result(False, blocked=True, note=str(e)), 0
             except Exception as e:  # a collector must never take the run down
                 r, elapsed = _result(False, note="Collector failed: %s"
                                                  % type(e).__name__), 0
@@ -1961,6 +1982,9 @@ def _timed(fn, query, opts):
     t0 = time.time()
     try:
         return fn(query, opts), time.time() - t0
+    except safefetch.BlockedURL as e:
+        # A refused URL is a mistake worth explaining, not an opaque failure.
+        return _result(False, blocked=True, note=str(e)), time.time() - t0
     except Exception as e:
         return (_result(False, note="Collector failed: %s" % type(e).__name__),
                 time.time() - t0)

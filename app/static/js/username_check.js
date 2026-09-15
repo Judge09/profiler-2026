@@ -20,6 +20,7 @@
   let totalPlatforms   = 0;
   let doneCount        = 0;
   let foundCount       = 0;
+  let uncertainCount   = 0;
   let activeFilter     = 'all';
   let allResults       = [];
   let es               = null;
@@ -47,6 +48,7 @@
     allResults    = [];
     doneCount     = 0;
     foundCount    = 0;
+    uncertainCount = 0;
     currentRunId  = null;
     currentUsername = username;
     resultsBody.innerHTML = '';
@@ -82,11 +84,14 @@
 
       doneCount++;
       if (data.status === 'found') foundCount++;
+      else if (data.status === 'unverifiable') uncertainCount++;
       allResults.push(data);
 
       const pct = totalPlatforms ? Math.round((doneCount / totalPlatforms) * 100) : 0;
       setProgress(pct, `${doneCount} / ${totalPlatforms}`);
-      statsEl.innerHTML = `<span class="text-green">${foundCount} found</span> · <span class="text-dim">${doneCount} checked</span>`;
+      statsEl.innerHTML = `<span class="text-green">${foundCount} found</span>` +
+        (uncertainCount ? ` · <span class="text-yellow">${uncertainCount} to check</span>` : '') +
+        ` · <span class="text-dim">${doneCount} checked</span>`;
 
       appendResultRow(data);
     };
@@ -103,7 +108,8 @@
     cancelBtn.style.display = 'none';
     setProgress(100, 'Complete');
     statsEl.innerHTML = `
-      <span class="text-green"><i class="fa fa-check-circle me-1"></i>${foundCount} found</span>
+      <span class="text-green"><i class="fa fa-check-circle me-1"></i>${foundCount} found</span>` +
+      (uncertainCount ? ` · <span class="text-yellow"><i class="fa fa-circle-question me-1"></i>${uncertainCount} need checking by hand</span>` : '') + `
       &nbsp;·&nbsp;
       <span class="text-dim">${totalPlatforms} platforms checked</span>
     `;
@@ -131,7 +137,8 @@
     const tr = document.createElement('tr');
     tr.dataset.status   = data.status;
     tr.dataset.platform = data.platform.toLowerCase();
-    const copyCell = data.url && data.status === 'found'
+    const openable = data.status === 'found' || data.status === 'unverifiable';
+    const copyCell = data.url && openable
       ? `<td><button class="copy-btn" onclick="copyToClipboard('${escHtml(data.url)}', this)" title="Copy URL"><i class="fa fa-copy"></i></button></td>`
       : '<td></td>';
 
@@ -140,7 +147,7 @@
       <td class="status-${data.status}">${statusLabel(data.status)}</td>
       <td style="font-family:var(--font-mono); font-size:11px; color:var(--text-faint);">${data.http_code || '—'}</td>
       <td>
-        ${data.url && data.status === 'found'
+        ${data.url && openable
           ? `<a href="${escHtml(data.url)}" target="_blank" rel="noopener" class="text-accent" style="font-size:11px; font-family:var(--font-mono);">${escHtml(data.url)}</a>`
           : `<span style="color:var(--text-faint); font-size:11px;">${escHtml(data.url || '—')}</span>`
         }
@@ -160,6 +167,9 @@
     const map = {
       found:     '<i class="fa fa-check-circle me-1"></i>FOUND',
       not_found: '<i class="fa fa-circle-xmark me-1"></i>Not found',
+      // The platform answered 200, but it answers 200 for accounts that do
+      // not exist too, so this is "go and look" rather than a result.
+      unverifiable: '<i class="fa fa-circle-question me-1"></i>Check by hand',
       error:     '<i class="fa fa-triangle-exclamation me-1"></i>Error',
       timeout:   '<i class="fa fa-clock me-1"></i>Timeout',
     };

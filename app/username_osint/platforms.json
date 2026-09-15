@@ -1,60 +1,531 @@
 {
-  "GitHub": {"url": "https://github.com/{}", "errorType": "status_code"},
-  "GitLab": {"url": "https://gitlab.com/{}", "errorType": "status_code"},
-  "Twitter": {"url": "https://twitter.com/{}", "errorType": "status_code"},
-  "Instagram": {"url": "https://www.instagram.com/{}/", "errorType": "status_code"},
-  "Reddit": {"url": "https://www.reddit.com/user/{}", "errorType": "status_code"},
-  "TikTok": {"url": "https://www.tiktok.com/@{}", "errorType": "status_code"},
-  "YouTube": {"url": "https://www.youtube.com/@{}", "errorType": "status_code"},
-  "Twitch": {"url": "https://www.twitch.tv/{}", "errorType": "status_code"},
-  "Pinterest": {"url": "https://www.pinterest.com/{}/", "errorType": "status_code"},
-  "Tumblr": {"url": "https://{}.tumblr.com/", "errorType": "status_code"},
-  "Medium": {"url": "https://medium.com/@{}", "errorType": "status_code"},
-  "DevTo": {"url": "https://dev.to/{}", "errorType": "status_code"},
-  "Hashnode": {"url": "https://hashnode.com/@{}", "errorType": "status_code"},
-  "HackerNews": {"url": "https://news.ycombinator.com/user?id={}", "errorType": "message", "errorMsg": "No such user"},
-  "ProductHunt": {"url": "https://www.producthunt.com/@{}", "errorType": "status_code"},
-  "AngelList": {"url": "https://angel.co/{}", "errorType": "status_code"},
-  "Keybase": {"url": "https://keybase.io/{}", "errorType": "status_code"},
-  "Pastebin": {"url": "https://pastebin.com/u/{}", "errorType": "status_code"},
-  "Replit": {"url": "https://replit.com/@{}", "errorType": "status_code"},
-  "CodePen": {"url": "https://codepen.io/{}", "errorType": "status_code"},
-  "Dribbble": {"url": "https://dribbble.com/{}", "errorType": "status_code"},
-  "Behance": {"url": "https://www.behance.net/{}", "errorType": "status_code"},
-  "Flickr": {"url": "https://www.flickr.com/people/{}", "errorType": "message", "errorMsg": "not found"},
-  "500px": {"url": "https://500px.com/p/{}", "errorType": "status_code"},
-  "Vimeo": {"url": "https://vimeo.com/{}", "errorType": "status_code"},
-  "SoundCloud": {"url": "https://soundcloud.com/{}", "errorType": "status_code"},
-  "Spotify": {"url": "https://open.spotify.com/user/{}", "errorType": "status_code"},
-  "LastFm": {"url": "https://www.last.fm/user/{}", "errorType": "status_code"},
-  "Steam": {"url": "https://steamcommunity.com/id/{}", "errorType": "message", "errorMsg": "profile not found"},
-  "Xbox": {"url": "https://www.xboxgamertag.com/search/{}", "errorType": "status_code"},
-  "Itch.io": {"url": "https://{}.itch.io/", "errorType": "status_code"},
-  "NPM": {"url": "https://www.npmjs.com/~{}", "errorType": "status_code"},
-  "PyPI": {"url": "https://pypi.org/user/{}/", "errorType": "status_code"},
-  "DockerHub": {"url": "https://hub.docker.com/u/{}", "errorType": "status_code"},
-  "HuggingFace": {"url": "https://huggingface.co/{}", "errorType": "status_code"},
-  "Kaggle": {"url": "https://www.kaggle.com/{}", "errorType": "status_code"},
-  "Academia": {"url": "https://independent.academia.edu/{}", "errorType": "status_code"},
-  "ResearchGate": {"url": "https://www.researchgate.net/profile/{}", "errorType": "status_code"},
-  "Quora": {"url": "https://www.quora.com/profile/{}", "errorType": "status_code"},
-  "StackOverflow": {"url": "https://stackoverflow.com/users/{}", "errorType": "status_code"},
-  "Mastodon": {"url": "https://mastodon.social/@{}", "errorType": "status_code"},
-  "Bluesky": {"url": "https://bsky.app/profile/{}", "errorType": "status_code"},
-  "Threads": {"url": "https://www.threads.net/@{}", "errorType": "status_code"},
-  "Linktree": {"url": "https://linktr.ee/{}", "errorType": "status_code"},
-  "AboutMe": {"url": "https://about.me/{}", "errorType": "status_code"},
-  "Gravatar": {"url": "https://en.gravatar.com/{}", "errorType": "status_code"},
-  "Telegram": {"url": "https://t.me/{}", "errorType": "status_code"},
-  "Snapchat": {"url": "https://www.snapchat.com/add/{}", "errorType": "status_code"},
-  "WeHeartIt": {"url": "https://weheartit.com/{}", "errorType": "status_code"},
-  "Wattpad": {"url": "https://www.wattpad.com/user/{}", "errorType": "status_code"},
-  "Fanfiction": {"url": "https://www.fanfiction.net/u/{}", "errorType": "status_code"},
-  "AO3": {"url": "https://archiveofourown.org/users/{}", "errorType": "status_code"},
-  "Letterboxd": {"url": "https://letterboxd.com/{}/", "errorType": "status_code"},
-  "Goodreads": {"url": "https://www.goodreads.com/{}", "errorType": "status_code"},
-  "Strava": {"url": "https://www.strava.com/athletes/{}", "errorType": "status_code"},
-  "Duolingo": {"url": "https://www.duolingo.com/profile/{}", "errorType": "status_code"},
-  "Chess.com": {"url": "https://www.chess.com/member/{}", "errorType": "status_code"},
-  "Lichess": {"url": "https://lichess.org/@/{}", "errorType": "status_code"}
+  "500px": {
+    "errorType": "status_code",
+    "url": "https://500px.com/p/{}",
+    "verifiable": false
+  },
+  "AO3": {
+    "errorType": "status_code",
+    "url": "https://archiveofourown.org/users/{}"
+  },
+  "AboutMe": {
+    "errorType": "status_code",
+    "url": "https://about.me/{}"
+  },
+  "Academia": {
+    "errorType": "status_code",
+    "url": "https://independent.academia.edu/{}"
+  },
+  "AngelList": {
+    "errorType": "status_code",
+    "url": "https://angel.co/{}"
+  },
+  "Audiomack": {
+    "errorType": "status_code",
+    "url": "https://audiomack.com/{}",
+    "verifiable": false
+  },
+  "Badoo": {
+    "errorType": "status_code",
+    "url": "https://badoo.com/en/{}"
+  },
+  "Bandcamp": {
+    "errorType": "status_code",
+    "url": "https://{}.bandcamp.com/",
+    "verifiable": false
+  },
+  "Behance": {
+    "errorType": "status_code",
+    "url": "https://www.behance.net/{}"
+  },
+  "BitChute": {
+    "errorType": "status_code",
+    "url": "https://www.bitchute.com/channel/{}/",
+    "verifiable": false
+  },
+  "Bitbucket": {
+    "errorType": "status_code",
+    "url": "https://bitbucket.org/{}/"
+  },
+  "Blogger": {
+    "errorType": "status_code",
+    "url": "https://{}.blogspot.com/"
+  },
+  "Bluesky": {
+    "errorType": "status_code",
+    "url": "https://bsky.app/profile/{}",
+    "verifiable": false
+  },
+  "BuyMeACoffee": {
+    "errorType": "status_code",
+    "url": "https://www.buymeacoffee.com/{}"
+  },
+  "Carrd": {
+    "errorType": "status_code",
+    "url": "https://{}.carrd.co/"
+  },
+  "Chess.com": {
+    "errorType": "status_code",
+    "url": "https://www.chess.com/member/{}"
+  },
+  "CodePen": {
+    "errorType": "status_code",
+    "url": "https://codepen.io/{}"
+  },
+  "CodeSandbox": {
+    "errorType": "status_code",
+    "url": "https://codesandbox.io/u/{}"
+  },
+  "Couchsurfing": {
+    "errorType": "status_code",
+    "url": "https://www.couchsurfing.com/people/{}"
+  },
+  "DevTo": {
+    "errorType": "status_code",
+    "url": "https://dev.to/{}"
+  },
+  "Discord Invite": {
+    "errorType": "status_code",
+    "url": "https://discord.com/invite/{}",
+    "verifiable": false
+  },
+  "Disqus": {
+    "errorType": "status_code",
+    "url": "https://disqus.com/by/{}/"
+  },
+  "DockerHub": {
+    "errorType": "status_code",
+    "url": "https://hub.docker.com/u/{}"
+  },
+  "Douyin": {
+    "errorType": "status_code",
+    "url": "https://www.douyin.com/user/{}",
+    "verifiable": false
+  },
+  "Dribbble": {
+    "errorType": "status_code",
+    "url": "https://dribbble.com/{}"
+  },
+  "Duolingo": {
+    "errorType": "status_code",
+    "url": "https://www.duolingo.com/profile/{}",
+    "verifiable": false
+  },
+  "Epic Games": {
+    "errorType": "status_code",
+    "url": "https://fortnitetracker.com/profile/all/{}"
+  },
+  "Etsy": {
+    "errorType": "status_code",
+    "url": "https://www.etsy.com/shop/{}"
+  },
+  "Exercism": {
+    "errorType": "status_code",
+    "url": "https://exercism.org/profiles/{}"
+  },
+  "Fanfiction": {
+    "errorType": "status_code",
+    "url": "https://www.fanfiction.net/u/{}"
+  },
+  "Fiverr": {
+    "errorType": "status_code",
+    "url": "https://www.fiverr.com/{}"
+  },
+  "Flickr": {
+    "errorMsg": "not found",
+    "errorType": "message",
+    "url": "https://www.flickr.com/people/{}"
+  },
+  "Freelancer": {
+    "errorType": "status_code",
+    "url": "https://www.freelancer.com/u/{}",
+    "verifiable": false
+  },
+  "Gab": {
+    "errorType": "status_code",
+    "url": "https://gab.com/{}"
+  },
+  "Ghost": {
+    "errorType": "status_code",
+    "url": "https://{}.ghost.io/"
+  },
+  "Giphy": {
+    "errorType": "status_code",
+    "url": "https://giphy.com/channel/{}"
+  },
+  "GitHub": {
+    "errorType": "status_code",
+    "url": "https://github.com/{}"
+  },
+  "GitLab": {
+    "errorType": "status_code",
+    "url": "https://gitlab.com/{}"
+  },
+  "Goodreads": {
+    "errorType": "status_code",
+    "url": "https://www.goodreads.com/{}"
+  },
+  "Gravatar": {
+    "errorType": "status_code",
+    "url": "https://en.gravatar.com/{}"
+  },
+  "Gumroad": {
+    "errorType": "status_code",
+    "url": "https://{}.gumroad.com/"
+  },
+  "HackTheBox": {
+    "errorType": "status_code",
+    "url": "https://app.hackthebox.com/users/{}",
+    "verifiable": false
+  },
+  "HackerNews": {
+    "errorMsg": "No such user",
+    "errorType": "message",
+    "url": "https://news.ycombinator.com/user?id={}",
+    "verifiable": false
+  },
+  "HackerRank": {
+    "errorType": "status_code",
+    "url": "https://www.hackerrank.com/{}",
+    "verifiable": false
+  },
+  "Hashnode": {
+    "errorType": "status_code",
+    "url": "https://hashnode.com/@{}",
+    "verifiable": false
+  },
+  "HuggingFace": {
+    "errorType": "status_code",
+    "url": "https://huggingface.co/{}"
+  },
+  "Imgur": {
+    "errorType": "status_code",
+    "url": "https://imgur.com/user/{}",
+    "verifiable": false
+  },
+  "Instagram": {
+    "errorType": "status_code",
+    "url": "https://www.instagram.com/{}/",
+    "verifiable": false
+  },
+  "Itch.io": {
+    "errorType": "status_code",
+    "url": "https://{}.itch.io/"
+  },
+  "Kaggle": {
+    "errorType": "status_code",
+    "url": "https://www.kaggle.com/{}",
+    "verifiable": false
+  },
+  "Keybase": {
+    "errorType": "status_code",
+    "url": "https://keybase.io/{}"
+  },
+  "Kick": {
+    "errorType": "status_code",
+    "url": "https://kick.com/{}",
+    "verifiable": false
+  },
+  "Ko-fi": {
+    "errorType": "status_code",
+    "url": "https://ko-fi.com/{}",
+    "verifiable": false
+  },
+  "LastFm": {
+    "errorType": "status_code",
+    "url": "https://www.last.fm/user/{}",
+    "verifiable": false
+  },
+  "LeetCode": {
+    "errorType": "status_code",
+    "url": "https://leetcode.com/{}/"
+  },
+  "Letterboxd": {
+    "errorType": "status_code",
+    "url": "https://letterboxd.com/{}/"
+  },
+  "Lichess": {
+    "errorType": "status_code",
+    "url": "https://lichess.org/@/{}"
+  },
+  "Line": {
+    "errorType": "status_code",
+    "url": "https://line.me/R/ti/p/@{}"
+  },
+  "Linktree": {
+    "errorType": "status_code",
+    "url": "https://linktr.ee/{}"
+  },
+  "Mastodon": {
+    "errorType": "status_code",
+    "url": "https://mastodon.social/@{}"
+  },
+  "Medium": {
+    "errorType": "status_code",
+    "url": "https://medium.com/@{}",
+    "verifiable": false
+  },
+  "Minds": {
+    "errorType": "status_code",
+    "url": "https://www.minds.com/{}",
+    "verifiable": false
+  },
+  "Mixcloud": {
+    "errorType": "status_code",
+    "url": "https://www.mixcloud.com/{}/",
+    "verifiable": false
+  },
+  "MyFitnessPal": {
+    "errorType": "status_code",
+    "url": "https://www.myfitnesspal.com/user/{}"
+  },
+  "NPM": {
+    "errorType": "status_code",
+    "url": "https://www.npmjs.com/~{}"
+  },
+  "OK.ru": {
+    "errorType": "status_code",
+    "url": "https://ok.ru/{}"
+  },
+  "Odysee": {
+    "errorType": "status_code",
+    "url": "https://odysee.com/@{}",
+    "verifiable": false
+  },
+  "OkCupid": {
+    "errorType": "status_code",
+    "url": "https://www.okcupid.com/profile/{}",
+    "verifiable": false
+  },
+  "OpenSea": {
+    "errorType": "status_code",
+    "url": "https://opensea.io/{}"
+  },
+  "Osu": {
+    "errorType": "status_code",
+    "url": "https://osu.ppy.sh/users/{}"
+  },
+  "Packagist": {
+    "errorType": "status_code",
+    "url": "https://packagist.org/users/{}/"
+  },
+  "Parler": {
+    "errorType": "status_code",
+    "url": "https://parler.com/{}",
+    "verifiable": false
+  },
+  "Pastebin": {
+    "errorType": "status_code",
+    "url": "https://pastebin.com/u/{}"
+  },
+  "Patreon": {
+    "errorType": "status_code",
+    "url": "https://www.patreon.com/{}"
+  },
+  "Pinterest": {
+    "errorType": "status_code",
+    "url": "https://www.pinterest.com/{}/",
+    "verifiable": false
+  },
+  "PlayStation": {
+    "errorType": "status_code",
+    "url": "https://psnprofiles.com/{}"
+  },
+  "ProductHunt": {
+    "errorType": "status_code",
+    "url": "https://www.producthunt.com/@{}"
+  },
+  "PyPI": {
+    "errorType": "status_code",
+    "url": "https://pypi.org/user/{}/",
+    "verifiable": false
+  },
+  "Quora": {
+    "errorType": "status_code",
+    "url": "https://www.quora.com/profile/{}"
+  },
+  "Rarible": {
+    "errorType": "status_code",
+    "url": "https://rarible.com/{}",
+    "verifiable": false
+  },
+  "Redbubble": {
+    "errorType": "status_code",
+    "url": "https://www.redbubble.com/people/{}/shop"
+  },
+  "Reddit": {
+    "errorType": "status_code",
+    "url": "https://www.reddit.com/user/{}",
+    "verifiable": false
+  },
+  "Replit": {
+    "errorType": "status_code",
+    "url": "https://replit.com/@{}"
+  },
+  "ResearchGate": {
+    "errorType": "status_code",
+    "url": "https://www.researchgate.net/profile/{}"
+  },
+  "Roblox": {
+    "errorType": "status_code",
+    "url": "https://www.roblox.com/user.aspx?username={}"
+  },
+  "RubyGems": {
+    "errorType": "status_code",
+    "url": "https://rubygems.org/profiles/{}"
+  },
+  "Rumble": {
+    "errorType": "status_code",
+    "url": "https://rumble.com/user/{}"
+  },
+  "Scribd": {
+    "errorType": "status_code",
+    "url": "https://www.scribd.com/user/{}",
+    "verifiable": false
+  },
+  "Shopify": {
+    "errorType": "status_code",
+    "url": "https://{}.myshopify.com/"
+  },
+  "SlideShare": {
+    "errorType": "status_code",
+    "url": "https://www.slideshare.net/{}",
+    "verifiable": false
+  },
+  "Snapchat": {
+    "errorType": "status_code",
+    "url": "https://www.snapchat.com/add/{}"
+  },
+  "SoundCloud": {
+    "errorType": "status_code",
+    "url": "https://soundcloud.com/{}"
+  },
+  "SourceForge": {
+    "errorType": "status_code",
+    "url": "https://sourceforge.net/u/{}/profile/"
+  },
+  "Speedrun": {
+    "errorType": "status_code",
+    "url": "https://www.speedrun.com/user/{}"
+  },
+  "Spotify": {
+    "errorType": "status_code",
+    "url": "https://open.spotify.com/user/{}",
+    "verifiable": false
+  },
+  "StackOverflow": {
+    "errorType": "status_code",
+    "url": "https://stackoverflow.com/users/{}"
+  },
+  "Steam": {
+    "errorMsg": "profile not found",
+    "errorType": "message",
+    "url": "https://steamcommunity.com/id/{}"
+  },
+  "Strava": {
+    "errorType": "status_code",
+    "url": "https://www.strava.com/athletes/{}"
+  },
+  "Substack": {
+    "errorType": "status_code",
+    "url": "https://{}.substack.com/"
+  },
+  "Telegram": {
+    "errorType": "status_code",
+    "url": "https://t.me/{}"
+  },
+  "Telegraph": {
+    "errorType": "status_code",
+    "url": "https://telegra.ph/{}"
+  },
+  "Threads": {
+    "errorType": "status_code",
+    "url": "https://www.threads.net/@{}",
+    "verifiable": false
+  },
+  "TikTok": {
+    "errorType": "status_code",
+    "url": "https://www.tiktok.com/@{}",
+    "verifiable": false
+  },
+  "Tinder": {
+    "errorType": "status_code",
+    "url": "https://tinder.com/@{}",
+    "verifiable": false
+  },
+  "Trello": {
+    "errorType": "status_code",
+    "url": "https://trello.com/{}",
+    "verifiable": false
+  },
+  "Truth Social": {
+    "errorType": "status_code",
+    "url": "https://truthsocial.com/@{}",
+    "verifiable": false
+  },
+  "TryHackMe": {
+    "errorType": "status_code",
+    "url": "https://tryhackme.com/p/{}",
+    "verifiable": false
+  },
+  "Tumblr": {
+    "errorType": "status_code",
+    "url": "https://{}.tumblr.com/"
+  },
+  "Twitch": {
+    "errorType": "status_code",
+    "url": "https://www.twitch.tv/{}",
+    "verifiable": false
+  },
+  "Twitter": {
+    "errorType": "status_code",
+    "url": "https://twitter.com/{}"
+  },
+  "Untappd": {
+    "errorType": "status_code",
+    "url": "https://untappd.com/user/{}"
+  },
+  "Upwork": {
+    "errorType": "status_code",
+    "url": "https://www.upwork.com/freelancers/{}"
+  },
+  "VK": {
+    "errorType": "status_code",
+    "url": "https://vk.com/{}"
+  },
+  "Viber": {
+    "errorType": "status_code",
+    "url": "https://chats.viber.com/{}",
+    "verifiable": false
+  },
+  "Vimeo": {
+    "errorType": "status_code",
+    "url": "https://vimeo.com/{}"
+  },
+  "Wattpad": {
+    "errorType": "status_code",
+    "url": "https://www.wattpad.com/user/{}"
+  },
+  "WeHeartIt": {
+    "errorType": "status_code",
+    "url": "https://weheartit.com/{}"
+  },
+  "Weibo": {
+    "errorType": "status_code",
+    "url": "https://weibo.com/n/{}",
+    "verifiable": false
+  },
+  "WordPress": {
+    "errorType": "status_code",
+    "url": "https://{}.wordpress.com/",
+    "verifiable": false
+  },
+  "Xbox": {
+    "errorType": "status_code",
+    "url": "https://www.xboxgamertag.com/search/{}"
+  },
+  "YouTube": {
+    "errorType": "status_code",
+    "url": "https://www.youtube.com/@{}"
+  }
 }

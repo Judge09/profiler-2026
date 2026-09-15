@@ -654,6 +654,9 @@ textarea.form-control { resize: vertical; min-height: 80px; font-family: var(--f
 .osint-table tr:hover td { background: var(--bg-card2); }
 
 .status-found { color: var(--green); font-weight: 700; }
+/* The platform answered 200, but it does that for absent accounts too, so
+   this is a link worth opening rather than a result to record. */
+.status-unverifiable { color: var(--yellow); }
 .status-not_found { color: var(--text-faint); }
 .status-error { color: var(--red); }
 .status-timeout { color: var(--yellow); }

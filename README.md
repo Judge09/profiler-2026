@@ -41,7 +41,7 @@ report says what is installed and what each missing piece would add.
 | **Signal Monitor** | Collect posts and comments from live sources, score and triage them. |
 | **Link Mapper** | Entity graph of accounts, domains, locations and profiles. |
 | **Dork builder** | Search templates for finding what is not indexed conveniently. |
-| **Username OSINT** | Check a username across many platforms at once. |
+| **Identity OSINT** | A username across 121 platforms, breach history for any domain, password exposure checks, and pivot links into the tools this app cannot automate. |
 | **Vault** | Encrypted storage for the sessions and API keys some sources need. |
 
 ---
@@ -83,13 +83,16 @@ duplicate anything. Full details in [docs/AUTOMATION.md](docs/AUTOMATION.md).
 ## Tests
 
 ```bash
-python -m pytest tests/test_monitor.py tests/test_facebook.py -v
+python -m pytest tests/test_monitor.py tests/test_facebook.py tests/test_osint.py -v
+python -m pytest tests/test_security.py -v
 python tests/test_api.py
 python tests/test_auth.py
 python tests/test_routes.py
 ```
 
-Everything is offline — no test needs the network.
+Most tests are offline. `tests/test_security.py` exercises the real login
+throttle so it takes about a minute, and `tests/test_browser_osint.py` reads
+the live breach catalogue, so that one needs internet.
 
 ---
 

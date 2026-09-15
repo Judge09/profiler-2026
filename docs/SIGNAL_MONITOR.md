@@ -472,6 +472,73 @@ usually describes coordinators better than who posted most.
 
 ---
 
+## Identity OSINT: usernames, breaches and pivots
+
+The **Identity OSINT** page holds the lookups that are about one subject rather
+than a stream of posts.
+
+### Username sweep
+
+Checks a handle across 121 platforms at once. Results come back in three
+states, and the distinction matters:
+
+| State | Meaning |
+|---|---|
+| **Found** | The platform confirmed the account exists. |
+| **Check by hand** | The platform answered 200, but it answers 200 for accounts that do not exist too. Open the link. |
+| **Not found** | The platform confirmed there is no such account. |
+
+That middle state exists because 42 of the 121 platforms — Instagram, TikTok,
+Reddit, Pinterest and similar — serve a JavaScript shell or a bot-check page
+whose bytes are *identical* whether or not the account exists. Counting those
+as finds produced roughly a third of all results falsely, which made the whole
+sweep untrustworthy: you could not tell the real hits from the invented ones.
+Measured on a username that cannot exist, the sweep now reports **zero** finds.
+
+### Breach history
+
+Reads Have I Been Pwned's public breach catalogue — 1,000+ breaches, **no API
+key needed**. Enter a domain (`comelec.gov.ph`) or an organisation name, or hit
+**PH breaches** for every breach of a `.ph` domain.
+
+Each result shows when it happened, how many records went, and what leaked,
+with passwords, biometrics, government IDs and financial data called out
+separately — "an email list leaked" and "biometrics leaked" are not the same
+finding.
+
+Domains in collected posts are checked automatically during enrichment, so a
+link to a breached organisation is flagged without asking.
+
+An unbreached domain reports *"that is not proof it was never breached — only
+that HIBP does not track one"*, because absence of evidence is not evidence of
+absence.
+
+**Per-address lookup** ("has this email been breached?") needs a paid HIBP
+key. Add it to the vault under platform `hibp` and it starts working. Without
+one the app says it could not look, rather than returning an empty result that
+reads as *"this address is clean"*.
+
+### Password check
+
+Checks a password against 900M+ breached credentials using k-anonymity: the
+SHA-1 is computed locally and **only its first five characters are sent**. The
+password and its full hash never leave the machine. Useful for vetting the
+throwaway accounts used for vault sessions.
+
+### Pivot links
+
+Builds the exact queries for the tools this app cannot automate — Google Lens,
+Yandex and TinEye for reverse image search, WhatsMyName for usernames, Epieos
+and EmailRep for addresses, crt.sh, urlscan and the Wayback Machine for
+domains. Sherlock and Maigret come with the command to run, since a link to
+their GitHub page is not what you need at that moment.
+
+These are generated links, not scraped results: all three image engines block
+automation, and pretending otherwise would ship a feature that silently returns
+nothing.
+
+---
+
 ## Where your data lives
 
 **Everything you create is stored in your browser**, in IndexedDB — watches,
@@ -541,6 +608,29 @@ from the credential vault, so change it.
 
 Session cookies are `HttpOnly` and `SameSite=Lax` always, and `Secure` is set
 automatically on serverless hosts or when `FORCE_HTTPS=1`.
+
+**Login throttling.** Failed logins are counted per address: each one is
+answered a little more slowly, and after 8 the address is refused for 5
+minutes. Measured before this existed, the form accepted ~2,400 guesses a
+second. A correct password on the first try is still answered instantly, and a
+success clears the count, so a typo costs nothing. The lockout is per address,
+so nobody can lock you out of your own instance.
+
+Behind a reverse proxy, set `TRUST_PROXY=1` so the throttle counts the real
+client rather than the proxy. Without it `X-Forwarded-For` is ignored, because
+an attacker could otherwise claim a fresh identity on every request.
+
+**Outbound fetch guard (SSRF).** Several sources fetch a URL you supply. Those
+requests are checked, and refused when the host resolves to a private,
+loopback, link-local, multicast or reserved address — including after a
+redirect, which is the usual way around a naive check. Without it, typing
+`http://169.254.169.254/` into the URL field made the server read its own cloud
+credentials and hand them back as post text; on a local network the same input
+reached any internal service. Non-HTTP schemes, embedded credentials and
+non-web ports are refused too.
+
+Set `ALLOW_PRIVATE_FETCH=1` only to point the app at a lab network on a host
+nobody else can reach.
 
 ### Serverless (Vercel)
 

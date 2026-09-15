@@ -4,12 +4,95 @@
 {% block content %}
 <div class="page-header d-flex align-items-center justify-content-between">
   <div>
-    <div class="page-title">Username <span>OSINT</span></div>
-    <div class="page-subtitle">Check a username across {{ platform_count }} platforms in real-time</div>
+    <div class="page-title">Identity <span>OSINT</span></div>
+    <div class="page-subtitle">Usernames across {{ platform_count }} platforms,
+      breach history, and pivots into the tools that cover the rest</div>
   </div>
 </div>
 
 <div class="page-body">
+
+  <!-- Toolkit: everything that is a lookup rather than a sweep. -->
+  <div class="card mb-4">
+    <div class="card-header-bar">
+      <span class="card-title"><i class="fa fa-toolbox me-2"></i>Toolkit</span>
+      <div class="d-flex gap-2" id="toolTabs">
+        <button class="btn btn-xs osint-filter-btn active" data-tool="breach">Breach history</button>
+        <button class="btn btn-xs osint-filter-btn" data-tool="pivot">Pivot links</button>
+        <button class="btn btn-xs osint-filter-btn" data-tool="password">Password check</button>
+      </div>
+    </div>
+
+    <div class="p-3" id="tool-breach">
+      <div class="row g-2 align-items-end">
+        <div class="col-md-7">
+          <label class="form-label">Domain or organisation</label>
+          <input class="form-control mono" id="breachInput"
+                 placeholder="comelec.gov.ph — or a name like &quot;Wendy&quot;s&quot;">
+        </div>
+        <div class="col-md-5">
+          <button class="btn btn-primary" id="breachBtn">
+            <i class="fa fa-database"></i> Check breaches</button>
+          <button class="btn btn-ghost ms-2" id="breachPhBtn"
+                  title="Every breach of a .ph domain in the catalogue">PH breaches</button>
+        </div>
+      </div>
+      <div class="form-text mt-1">
+        Reads Have I Been Pwned&rsquo;s public breach catalogue. No key needed.
+        Per-address lookup is a paid feature &mdash; add a key to the vault
+        (platform <code>hibp</code>) to enable it.
+      </div>
+      <div id="breachOut" class="mt-3"></div>
+    </div>
+
+    <div class="p-3" id="tool-pivot" style="display:none">
+      <div class="row g-2 align-items-end">
+        <div class="col-md-3">
+          <label class="form-label">Kind</label>
+          <select class="form-select" id="pivotKind">
+            <option value="username">Username</option>
+            <option value="email">Email address</option>
+            <option value="image">Image URL</option>
+            <option value="domain">Domain</option>
+            <option value="name">Real name</option>
+          </select>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Value</label>
+          <input class="form-control mono" id="pivotInput" placeholder="@handle, address, image URL…">
+        </div>
+        <div class="col-md-3">
+          <button class="btn btn-primary" id="pivotBtn">
+            <i class="fa fa-arrow-up-right-from-square"></i> Build links</button>
+        </div>
+      </div>
+      <div class="form-text mt-1">
+        Google Lens, TinEye and Yandex block automation, so these are the exact
+        queries to open rather than results fetched here.
+      </div>
+      <div id="pivotOut" class="mt-3"></div>
+    </div>
+
+    <div class="p-3" id="tool-password" style="display:none">
+      <div class="row g-2 align-items-end">
+        <div class="col-md-7">
+          <label class="form-label">Password to check</label>
+          <input type="password" class="form-control mono" id="pwInput"
+                 placeholder="Checked without being sent" autocomplete="off">
+        </div>
+        <div class="col-md-5">
+          <button class="btn btn-primary" id="pwBtn">
+            <i class="fa fa-key"></i> Check</button>
+        </div>
+      </div>
+      <div class="form-text mt-1">
+        <i class="fa fa-lock me-1"></i>Only the first five characters of the
+        hash are sent. The password itself never leaves this machine.
+        Useful for vetting the throwaway accounts used for vault sessions.
+      </div>
+      <div id="pwOut" class="mt-3"></div>
+    </div>
+  </div>
 
   <!-- Search form -->
   <div class="card mb-4">
@@ -65,6 +148,9 @@
           <button class="btn btn-xs osint-filter-btn active" data-filter="all">All</button>
           <button class="btn btn-xs osint-filter-btn" data-filter="found"
                   style="color:var(--green); border-color:var(--green);">Found</button>
+          <button class="btn btn-xs osint-filter-btn" data-filter="unverifiable"
+                  style="color:var(--yellow); border-color:var(--yellow);"
+                  title="The platform answers 200 for accounts that do not exist, so these need opening by hand">Check by hand</button>
           <button class="btn btn-xs osint-filter-btn" data-filter="not_found"
                   style="color:var(--text-faint);">Not Found</button>
           <button class="btn btn-xs osint-filter-btn" data-filter="error"
@@ -94,4 +180,5 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/username_check.js') }}"></script>
+<script src="{{ url_for('static', filename='js/osint_toolkit.js') }}"></script>
 {% endblock %}

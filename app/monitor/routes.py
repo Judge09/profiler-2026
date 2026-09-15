@@ -23,8 +23,8 @@ from ..auth.routes import login_required
 from ..extensions import db
 from ..models import (Graph, IntelNote, MonitorCredential, MonitorFeed,
                       MonitorPost, MonitorWatch, Profile)
-from . import (authfetch, capabilities, collectors, engine, graphbuild,
-               netintel, scoring, vault)
+from . import (authfetch, breachintel, capabilities, collectors, engine,
+               graphbuild, netintel, pivots, scoring, vault)
 from .keywords import (alias_hint, rules_hash, spec_for,
                        to_legacy_string)
 from .keywords import rules_hash as keywords_rules_hash
@@ -637,6 +637,74 @@ def dashboard_phishing():
 def capabilities_report():
     """What this deployment can and cannot do, and why."""
     return jsonify(capabilities.report())
+
+
+# -- OSINT pivots and breach intelligence ------------------------------------
+
+@monitor.route("/osint/breach")
+@login_required
+def osint_breach():
+    """Breach history for a domain, or a free-text search of the catalogue.
+
+    Keyless: this reads Have I Been Pwned's public breach list, which needs no
+    subscription. `?domain=` checks one domain, `?q=` searches, `?tld=` lists
+    breaches under a country suffix.
+    """
+    domain = (request.args.get("domain") or "").strip()
+    term = (request.args.get("q") or "").strip()
+    tld = (request.args.get("tld") or "").strip()
+
+    if domain:
+        return jsonify(breachintel.check_domain(domain))
+    if term:
+        return jsonify(breachintel.search(term))
+    if tld:
+        return jsonify(breachintel.by_country_tld(tld))
+    return jsonify(breachintel.status())
+
+
+@monitor.route("/osint/breach/account", methods=["POST"])
+@login_required
+def osint_breach_account():
+    """Breaches an email address appears in. Needs a paid HIBP key.
+
+    POST rather than GET so the address does not end up in server logs or
+    browser history.
+    """
+    data = request.json or {}
+    return jsonify(breachintel.check_account(data.get("email")))
+
+
+@monitor.route("/osint/password", methods=["POST"])
+@login_required
+def osint_password():
+    """Check a password against known breaches without disclosing it.
+
+    POST only, and the password is never logged or stored: only the first five
+    characters of its SHA-1 leave this machine.
+    """
+    data = request.json or {}
+    return jsonify(breachintel.check_password(data.get("password") or ""))
+
+
+@monitor.route("/osint/pivots")
+@login_required
+def osint_pivots():
+    """Search links for a subject: where else to look for it.
+
+    Google Lens, TinEye, Yandex and the rest cannot be automated, so this
+    returns the exact queries instead of pretending to run them.
+    """
+    kind = (request.args.get("kind") or "").strip()
+    value = (request.args.get("value") or "").strip()
+    if not kind or not value:
+        return jsonify({"error": "kind and value are both required",
+                        "kinds": pivots.all_kinds()}), 400
+    links = pivots.build(kind, value)
+    if not links:
+        return jsonify({"error": "Nothing to pivot on for %r." % kind,
+                        "kinds": pivots.all_kinds()}), 400
+    return jsonify({"kind": kind, "value": value, "pivots": links})
 
 
 @monitor.route("/new", methods=["POST"])

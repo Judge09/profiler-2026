@@ -543,10 +543,11 @@ def geolocate(target):
     return dict(out, target=target)
 
 
-def enrich_post(text, url="", do_geo=True, do_phish=True):
+def enrich_post(text, url="", do_geo=True, do_phish=True, do_breach=True):
     """Everything this module knows about one post, in one call."""
     ind = extract_indicators(text, url)
-    findings = {"indicators": ind, "phishing": [], "geo": [], "flags": []}
+    findings = {"indicators": ind, "phishing": [], "geo": [], "flags": [],
+                "breaches": []}
 
     hosts_seen = set()
     for u in ind["urls"][:12]:
@@ -571,6 +572,30 @@ def enrich_post(text, url="", do_geo=True, do_phish=True):
             g = geolocate(ip["ip"])
             if g.get("ok"):
                 findings["geo"].append(dict(g, via="ip in text"))
+
+    # Breach history of the domains a post links to. A link to an
+    # organisation whose credentials are already in circulation reads
+    # differently from a link to one that has never been breached -- and it is
+    # free to check, because the breach catalogue is public.
+    if do_breach:
+        from . import breachintel
+        catalogue = breachintel.catalogue()
+        if catalogue:
+            for domain in list(dict.fromkeys(
+                    u.get("domain") for u in ind["urls"][:8] if u.get("domain")))[:5]:
+                hit = breachintel.check_domain(domain, breaches=catalogue)
+                if hit["ok"] and hit["breaches"]:
+                    findings["breaches"].append({
+                        "domain": hit["domain"],
+                        "count": len(hit["breaches"]),
+                        "records": hit["total_records"],
+                        "latest": hit["breaches"][0]["breach_date"],
+                        "severe": sorted({s for b in hit["breaches"]
+                                          for s in b["severe"]}),
+                    })
+                    findings["flags"].append(
+                        "%s has been breached (%s records exposed)"
+                        % (hit["domain"], "{:,}".format(hit["total_records"])))
 
     for g in findings["geo"]:
         if g.get("hosting"):
